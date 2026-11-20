@@ -5,6 +5,8 @@ RUN --mount=type=cache,id=pacman-pkg,target=/var/cache/pacman/pkg,sharing=locked
     curl \
     foot-terminfo \
     git \
+    nodejs \
+    npm \
     ripgrep \
     starship \
     sudo \
@@ -25,6 +27,9 @@ ENV HOME=/home/fabien \
 RUN mkdir -p ~/.config ~/.cache ~/.local/{bin,share,state} \
     && echo 'eval "$(starship init zsh)"' > ~/.zshrc \
     && curl -fsSL https://claude.ai/install.sh | bash \
-    && curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path
+    && curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path \
+    && curl -fsSL https://chatgpt.com/codex/install.sh -o /tmp/sb-install-codex.sh \
+    && CODEX_NON_INTERACTIVE=1 CODEX_HOME="$HOME/.local/share/codex-cli" sh /tmp/sb-install-codex.sh \
+    && rm /tmp/sb-install-codex.sh
 
 CMD ["/bin/zsh"]
