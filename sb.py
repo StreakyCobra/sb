@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """sb: compose an `msb run` command from groups defined in a TOML file.
 
-    sb [--config FILE] [--debug] [--GROUP ...] [PATH ...] [-- COMMAND ...]
+    sb [--config FILE] [--debug] [-p PORT] [-v MOUNT] [-e KEY=VALUE]
+       [--GROUP ...] [PATH ...] [-- COMMAND ...]
 
 Each PATH (default: the current directory) is mounted at the same absolute path
 in the sandbox; the first directory becomes the working directory. The group
 named "default" is always applied; other groups are selected with --GROUP.
+-p, -v and -e add to the ports, mounts and env of the selected groups.
 See example.toml for the file format.
 """
 
@@ -25,6 +27,7 @@ LIST_KEYS = {"include", "mounts", "volumes", "ports", "host_ports", "args"}
 DICT_KEYS = {"env", "secrets"}
 OTHER_KEYS = {"description", "image", "command", "cpus", "memory", "git_metadata"}
 SECRET_KEYS = {"pass", "hosts", "headers"}
+BUILTIN_OPTIONS = {"config", "debug", "help", "port", "mount", "env"}
 
 
 def fail(message):
@@ -170,23 +173,36 @@ def parse_args(argv):
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help=f"groups file (default: {DEFAULT_CONFIG})")
     parser.add_argument("--debug", action="store_true", help="print the msb command instead of running it")
+    parser.add_argument("-p", "--port", dest="ports", action="append", default=[], metavar="PORT",
+                        help="publish a port, e.g. 127.0.0.1:3001:3001 (like ports =)")
+    parser.add_argument("-v", "--mount", dest="mounts", action="append", default=[], metavar="SRC[:DST[:OPTIONS]]",
+                        help="mount a file or directory (like mounts =)")
+    parser.add_argument("-e", "--env", dest="env", action="append", default=[], metavar="KEY=VALUE",
+                        help="set an environment variable (like env =)")
     parser.set_defaults(groups=[])
     selectable = parser.add_argument_group("groups")
     for name, group in groups.items():
         if name == DEFAULT_GROUP:
             continue
-        if name in ("config", "debug", "help"):
+        if name in BUILTIN_OPTIONS:
             fail(f"group name {name!r} clashes with a built-in option")
         selectable.add_argument(f"--{name}", dest="groups", action="append_const", const=name,
                                 help=group.get("description"))
     parser.add_argument("paths", nargs="*", metavar="PATH", help="files or directories to mount (default: .)")
     args = parser.parse_args(argv)
+    for item in args.env:
+        if "=" not in item:
+            parser.error(f"-e/--env expects KEY=VALUE, got {item!r}")
     return args, groups, command
 
 
 def main(argv):
     args, groups, command = parse_args(argv)
     settings = merge(groups, resolve(groups, args.groups))
+    # Command-line additions behave like one more group applied last.
+    settings["ports"] += args.ports
+    settings["mounts"] += args.mounts
+    settings["env"] |= dict(item.split("=", 1) for item in args.env)
 
     # Working directory: the first directory passed; the current one when no path
     # is given; the home directory when only files are given (nothing else is mounted).

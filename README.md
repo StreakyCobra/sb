@@ -28,6 +28,7 @@ sb                                       # shell in the current directory
 sb --claude -- claude --continue         # Claude Code, resuming the last session
 sb --opencode --github ~/Workspace/proj  # opencode with a GitHub token
 sb --debug --claude --java .             # print the msb command instead of running it
+sb --claude -p 127.0.0.1:3001:3001       # extra port (also -v SRC[:DST] and -e KEY=VALUE)
 sb --help                                # list the groups
 ```
 
