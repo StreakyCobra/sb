@@ -2,6 +2,7 @@ FROM docker.io/library/archlinux:base
 
 RUN --mount=type=cache,id=pacman-pkg,target=/var/cache/pacman/pkg,sharing=locked \
     pacman -Syu --noconfirm --needed \
+    bubblewrap \
     curl \
     foot-terminfo \
     git \
