@@ -18,7 +18,7 @@ RUN --mount=type=cache,id=pacman-pkg,target=/var/cache/pacman/pkg,sharing=locked
 USER fabien
 WORKDIR /home/fabien
 ENV HOME=/home/fabien \
-    PATH=/home/fabien/.local/bin:$PATH
+    PATH=/home/fabien/.opencode/bin:/home/fabien/.local/bin:$PATH
 
 # Pre-create common parents as the user: msb creates missing parents of mount
 # points as root, which would leave them unwritable.
