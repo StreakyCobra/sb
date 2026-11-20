@@ -50,6 +50,11 @@ def load_groups(path):
         unknown = set(group) - LIST_KEYS - DICT_KEYS - OTHER_KEYS
         if unknown:
             fail(f"group [{name}]: unknown key(s): {', '.join(sorted(unknown))}")
+        if "command" in group:
+            command = group["command"]
+            if not (isinstance(command, str) or
+                    isinstance(command, list) and all(isinstance(arg, str) for arg in command)):
+                fail(f"group [{name}]: 'command' must be a string or a list of strings")
         if "allowlist" in group:
             if not isinstance(group["allowlist"], list):
                 fail(f"group [{name}]: 'allowlist' must be a list of rule strings")
@@ -342,7 +347,12 @@ def main(argv):
     # Hide the progress display unless the image actually has to be pulled.
     quiet = ["--quiet"] if image_cached(settings["image"]) else []
     cmd = ["msb", "run", *quiet, *flags, settings["image"]]
-    command = command or [expand(part) for part in settings.get("command", [])]
+    if not command:
+        configured_command = settings.get("command", [])
+        if isinstance(configured_command, str):
+            command = ["sh", "-c", expand(configured_command)]
+        else:
+            command = [expand(part) for part in configured_command]
     if command:
         cmd += ["--", *command]
 

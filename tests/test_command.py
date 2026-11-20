@@ -11,13 +11,13 @@ import sb
 
 
 class CommandTests(unittest.TestCase):
-    def test_shell_substitution_is_passed_to_shell(self):
+    def test_string_command_is_passed_to_shell(self):
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory) / "config.toml"
             config.write_text("""\
 [default]
 image = "test"
-command = ["sh", "-c", 'exec codex -c "projects.\\"$(git rev-parse --show-toplevel)\\".trust_level=trusted"']
+command = 'exec codex -c "projects.\\"$(git rev-parse --show-toplevel)\\".trust_level=trusted"'
 """)
             output = io.StringIO()
             with (patch.dict(os.environ),
@@ -28,6 +28,29 @@ command = ["sh", "-c", 'exec codex -c "projects.\\"$(git rev-parse --show-toplev
             self.assertEqual(command[command.index("--") + 1:], [
                 "sh", "-c", 'exec codex -c "projects.\\"$(git rev-parse --show-toplevel)\\".trust_level=trusted"',
             ])
+
+    def test_list_command_and_cli_override(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config.toml"
+            config.write_text('[default]\nimage = "test"\ncommand = ["echo", "hello"]\n')
+            for extra, expected in [
+                ([], ["echo", "hello"]),
+                (["--", "printf", "%s", "override"], ["printf", "%s", "override"]),
+            ]:
+                with self.subTest(extra=extra), patch.dict(os.environ), \
+                     patch.object(sb, "image_cached", return_value=True), \
+                     contextlib.redirect_stdout(io.StringIO()) as output:
+                    sb.main(["--debug", "--config", str(config), directory, *extra])
+                    command = shlex.split(output.getvalue())
+                    self.assertEqual(command[command.index("--") + 1:], expected)
+
+    def test_invalid_command_type_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config.toml"
+            for value in ("42", '["echo", 42]', "true"):
+                config.write_text(f"[default]\ncommand = {value}\n")
+                with self.subTest(value=value), self.assertRaisesRegex(SystemExit, "command"):
+                    sb.load_groups(config)
 
     def test_unset_variables_still_fail(self):
         with patch.dict(os.environ, {}, clear=True):
