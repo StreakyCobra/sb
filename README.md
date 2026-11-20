@@ -37,6 +37,17 @@ the working directory. Secrets are read from `pass` (or the environment) and
 injected by msb on the way out: the sandbox only sees placeholders. See
 `example.toml` for the group syntax.
 
+Configured commands are argument lists, not shell commands. To evaluate a
+command substitution inside the sandbox, run a shell explicitly:
+
+```toml
+command = ["sh", "-c", 'exec codex -c "projects.\"$(git rev-parse --show-toplevel)\".trust_level=trusted"']
+```
+
+`sb` expands `$$VAR` and `$${VAR}` on the host. A single `$` passes through
+unchanged. Update existing configurations that use `$VAR` or `${VAR}` for host
+expansion to use the doubled-dollar syntax.
+
 Sandboxes set `SB_SANDBOX=msb`. starship can't detect a microVM as a
 container, so show the variable instead, in `~/.config/starship.toml`:
 

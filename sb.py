@@ -108,11 +108,15 @@ def merge(groups, names):
 
 
 def expand(text):
-    """Expand ~ and $VAR / ${VAR}; an unset variable is an error."""
-    result = os.path.expandvars(os.path.expanduser(str(text)))
-    if "$" in result:
-        fail(f"unset variable in {text!r}")
-    return result
+    """Expand ~ and host variables written as $$VAR or $${VAR}."""
+    def replace(match):
+        name = match.group(1) or match.group(2)
+        if name not in os.environ:
+            fail(f"unset variable in {text!r}")
+        return os.environ[name]
+
+    return re.sub(r"\$\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))",
+                  replace, os.path.expanduser(str(text)))
 
 
 def mount_flags(spec, debug):
@@ -296,7 +300,7 @@ def main(argv):
     # is given; the home directory when only files are given (nothing else is mounted).
     paths = [os.path.realpath(path) for path in args.paths] or [os.getcwd()]
     workdir = next((path for path in paths if os.path.isdir(path)), str(Path.home()))
-    os.environ["SB_PROJECT"] = os.path.basename(workdir)  # usable as ${SB_PROJECT} in the TOML
+    os.environ["SB_PROJECT"] = os.path.basename(workdir)  # usable as $${SB_PROJECT} in the TOML
 
     if "image" not in settings:
         fail("no image set: add image = \"...\" to the [default] group")
@@ -306,7 +310,7 @@ def main(argv):
         fail(f"random port variable(s) already defined: {', '.join(sorted(conflicts))}")
 
     random_ports = choose_random_ports(settings["random_ports"], settings["ports"])
-    os.environ.update(random_ports)  # Available to ${VAR} expansion in the configuration.
+    os.environ.update(random_ports)  # Available to $${VAR} expansion in the configuration.
     settings["env"] |= random_ports
     for port in random_ports.values():
         settings["ports"].append(f"127.0.0.1:{port}:{port}")

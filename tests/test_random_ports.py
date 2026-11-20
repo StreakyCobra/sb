@@ -122,8 +122,8 @@ random_ports = ["SB_UNUSED"]
 [default]
 image = "test"
 random_ports = ["SB_DIFIT_PORT"]
-env = { VIEWER_URL = "http://127.0.0.1:${SB_DIFIT_PORT}" }
-command = ["viewer", "${SB_DIFIT_PORT}"]
+env = { VIEWER_URL = "http://127.0.0.1:$${SB_DIFIT_PORT}" }
+command = ["viewer", "$${SB_DIFIT_PORT}"]
 """)
         environment = dict(value.split("=", 1) for value in self.flag_values(command, "-e"))
         port = environment["SB_DIFIT_PORT"]

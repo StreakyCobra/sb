@@ -7,9 +7,9 @@ memory = "16G"
 env = { TERM = "foot-direct", COLORTERM = "truecolor", SB_SANDBOX = "msb" }
 volumes = [
   "sb-pacman:/var/cache/pacman/pkg",
-  "sb-npm:${HOME}/.cache/npm",
+  "sb-npm:$${HOME}/.cache/npm",
 ]
-mounts = ["~/.config/starship.toml:${HOME}/.config/starship.toml:ro"]
+mounts = ["~/.config/starship.toml:$${HOME}/.config/starship.toml:ro"]
 # Deny unlisted outbound traffic. Selected groups add their own rules.
 # Gateway DNS is allowed automatically.
 allowlist = []
@@ -22,11 +22,11 @@ allowlist = []
 description = "Claude Code with shared history and read-only settings"
 command = ["claude"]
 allowlist = ["api.anthropic.com:443"]
-env = { CLAUDE_CONFIG_DIR = "${HOME}/.claude", DISABLE_AUTOUPDATER = "1" }
+env = { CLAUDE_CONFIG_DIR = "$${HOME}/.claude", DISABLE_AUTOUPDATER = "1" }
 mounts = [
-  "~/.local/share/sb/claude:${HOME}/.claude",
-  "~/.claude/settings.json:${HOME}/.claude/settings.json:ro",
-  "~/.claude/skills:${HOME}/.claude/skills:ro",
+  "~/.local/share/sb/claude:$${HOME}/.claude",
+  "~/.claude/settings.json:$${HOME}/.claude/settings.json:ro",
+  "~/.claude/skills:$${HOME}/.claude/skills:ro",
 ]
 
 [claude.secrets]
@@ -36,10 +36,10 @@ CLAUDE_CODE_OAUTH_TOKEN = { cmd = "pass show keys/anthropic-claude-oauth-token",
 description = "opencode with a per-project database and the ChatGPT token"
 command = ["opencode"]
 allowlist = ["chatgpt.com:443"]
-env = { OPENCODE_DB = "${SB_PROJECT}.db", OPENCODE_DISABLE_AUTOUPDATE = "1" }
+env = { OPENCODE_DB = "$${SB_PROJECT}.db", OPENCODE_DISABLE_AUTOUPDATE = "1" }
 mounts = [
-  "~/.local/share/sb/opencode:${HOME}/.local/share/opencode",
-  "~/.config/opencode:${HOME}/.config/opencode:ro",
+  "~/.local/share/sb/opencode:$${HOME}/.local/share/opencode",
+  "~/.config/opencode:$${HOME}/.config/opencode:ro",
 ]
 # The token is read from the host environment once when sb starts.
 secrets = { CHATGPT_ACCESS_TOKEN = { hosts = ["chatgpt.com"], headers = ["authorization"] } }
@@ -69,12 +69,12 @@ secrets = { CIRCLE_TOKEN = { cmd = "pass show keys/circleci-token", hosts = ["ci
 [java]
 description = "Maven settings and a shared local repository"
 memory = "24G"  # builds need more than the default; replaces [default]'s value
-mounts = ["~/.m2/settings.xml:${HOME}/.m2/settings.xml:ro"]
-volumes = ["sb-m2:${HOME}/.m2/repository"]
+mounts = ["~/.m2/settings.xml:$${HOME}/.m2/settings.xml:ro"]
+volumes = ["sb-m2:$${HOME}/.m2/repository"]
 
 [npm]
 description = "npm configuration"
-mounts = ["~/.npmrc:${HOME}/.npmrc:ro"]
+mounts = ["~/.npmrc:$${HOME}/.npmrc:ro"]
 
 [web]
 description = "Publish a dev server on host port 3000"
