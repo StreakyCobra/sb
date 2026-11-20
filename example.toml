@@ -26,7 +26,7 @@ mounts = [
 ]
 
 [claude.secrets]
-CLAUDE_CODE_OAUTH_TOKEN = { pass = "keys/anthropic-claude-oauth-token", hosts = ["api.anthropic.com"], headers = ["authorization"] }
+CLAUDE_CODE_OAUTH_TOKEN = { cmd = "pass show keys/anthropic-claude-oauth-token", hosts = ["api.anthropic.com"], headers = ["authorization"] }
 
 [opencode]
 description = "opencode with a per-project database and the ChatGPT token"
@@ -36,8 +36,7 @@ mounts = [
   "~/.local/share/sb/opencode:${HOME}/.local/share/opencode",
   "~/.config/opencode:${HOME}/.config/opencode:ro",
 ]
-# The refresher on the host keeps this token current; this one is read from
-# your environment (export it, or wrap sb in a function that does).
+# The token is read from the host environment once when sb starts.
 secrets = { CHATGPT_ACCESS_TOKEN = { hosts = ["chatgpt.com"], headers = ["authorization"] } }
 
 [mcp]
@@ -50,11 +49,11 @@ host_ports = [1869, 64342]
 
 [github]
 description = "GitHub token (gh, git over HTTPS)"
-secrets = { GH_TOKEN = { pass = "keys/github-token", hosts = ["api.github.com", "github.com"] } }
+secrets = { GH_TOKEN = { cmd = "pass show keys/github-token", hosts = ["api.github.com", "github.com"] } }
 
 [circleci]
 description = "CircleCI token"
-secrets = { CIRCLE_TOKEN = { pass = "keys/circleci-token", hosts = ["circleci.com"], headers = ["circle-token"] } }
+secrets = { CIRCLE_TOKEN = { cmd = "pass show keys/circleci-token", hosts = ["circleci.com"], headers = ["circle-token"] } }
 
 # --------------------------------------------------------------------------- #
 # Programming ecosystems                                                      #

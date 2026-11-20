@@ -26,7 +26,7 @@ DEFAULT_CONFIG = CONFIG_HOME / "sb" / "config.toml"
 LIST_KEYS = {"include", "mounts", "volumes", "ports", "host_ports", "args"}
 DICT_KEYS = {"env", "secrets"}
 OTHER_KEYS = {"description", "image", "command", "cpus", "memory", "git_metadata"}
-SECRET_KEYS = {"pass", "hosts", "headers"}
+SECRET_KEYS = {"cmd", "hosts", "headers"}
 BUILTIN_OPTIONS = {"config", "debug", "help", "port", "mount", "env"}
 
 
@@ -54,6 +54,8 @@ def load_groups(path):
             unknown = set(spec) - SECRET_KEYS
             if unknown:
                 fail(f"group [{name}]: secret {secret}: unknown key(s): {', '.join(sorted(unknown))}")
+            if "cmd" in spec and (not isinstance(spec["cmd"], str) or not spec["cmd"].strip()):
+                fail(f"group [{name}]: secret {secret}: 'cmd' must be a non-empty string")
     return groups
 
 
@@ -144,13 +146,21 @@ def secret_flag(name, spec):
 
 
 def secret_value(name, spec):
-    if "pass" not in spec:
+    if "cmd" not in spec:
         if name not in os.environ:
-            fail(f"secret {name}: not set in the environment and no 'pass' entry given")
+            fail(f"secret {name}: not set in the environment and no 'cmd' entry given")
         return os.environ[name]
-    result = subprocess.run(["pass", "show", spec["pass"]], check=False, capture_output=True, text=True)
+    try:
+        command = [expand(arg) for arg in shlex.split(spec["cmd"])]
+        if not command:
+            fail(f"secret {name}: command is empty")
+        result = subprocess.run(command, check=False, capture_output=True, text=True)
+    except ValueError:
+        fail(f"secret {name}: invalid command quoting")
+    except OSError:
+        fail(f"secret {name}: could not execute command")
     if result.returncode != 0:
-        fail(f"secret {name}: pass show {spec['pass']} failed: {result.stderr.strip()}")
+        fail(f"secret {name}: command failed with exit status {result.returncode}")
     return result.stdout.splitlines()[0] if result.stdout else ""
 
 
@@ -247,7 +257,7 @@ def main(argv):
 
     if args.debug:
         for name, spec in settings["secrets"].items():
-            source = f"pass show {spec['pass']}" if "pass" in spec else "host environment"
+            source = f"command: {spec['cmd']}" if "cmd" in spec else "host environment"
             print(f"# {name} from {source}")
         print(shlex.join(cmd))
         return
