@@ -3,4 +3,4 @@
 /pkg/
 /LICENSE-*
 /microsandbox-*.tar.gz
-/*.pkg.tar.*
+/*.pkg.tar*
