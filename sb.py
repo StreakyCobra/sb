@@ -197,6 +197,9 @@ def parse_args(argv):
 
 
 def main(argv):
+    if Path.cwd().resolve() == Path.home().resolve():
+        fail("cannot run from the home directory. Change to another directory and try again.")
+
     args, groups, command = parse_args(argv)
     settings = merge(groups, resolve(groups, args.groups))
     # Command-line additions behave like one more group applied last.
