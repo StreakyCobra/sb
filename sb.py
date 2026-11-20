@@ -13,6 +13,8 @@ See example.toml for the file format.
 
 import argparse
 import os
+import random
+import re
 import shlex
 import subprocess
 import sys
@@ -23,7 +25,7 @@ DEFAULT_GROUP = "default"
 CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
 DEFAULT_CONFIG = CONFIG_HOME / "sb" / "config.toml"
 
-LIST_KEYS = {"include", "mounts", "volumes", "ports", "host_ports", "args", "allowlist"}
+LIST_KEYS = {"include", "mounts", "volumes", "ports", "host_ports", "args", "allowlist", "random_ports"}
 DICT_KEYS = {"env", "secrets"}
 OTHER_KEYS = {"description", "image", "command", "cpus", "memory", "git_metadata"}
 SECRET_KEYS = {"cmd", "hosts", "headers"}
@@ -53,6 +55,12 @@ def load_groups(path):
                 fail(f"group [{name}]: 'allowlist' must be a list of rule strings")
             for entry in group["allowlist"]:
                 allowlist_rule(entry)
+        if "random_ports" in group:
+            if not isinstance(group["random_ports"], list):
+                fail(f"group [{name}]: 'random_ports' must be a list of environment variable names")
+            for variable in group["random_ports"]:
+                if not isinstance(variable, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", variable):
+                    fail(f"group [{name}]: invalid random port variable: {variable!r}")
         for secret, spec in group.get("secrets", {}).items():
             if not isinstance(spec, dict) or not spec.get("hosts"):
                 fail(f"group [{name}]: secret {secret} needs a 'hosts' list")
@@ -148,6 +156,36 @@ def allowlist_flags(entries):
     for entry in entries:
         flags += ["--net-rule", allowlist_rule(entry)]
     return flags
+
+
+def fixed_tcp_ports(specs):
+    """Collect configured host TCP ports, including ranges, to avoid reusing them."""
+    ports = set()
+    for spec in specs:
+        mapping, _, protocol = str(spec).partition("/")
+        if protocol not in ("", "tcp") or ":" not in mapping:
+            continue
+        host = mapping.rsplit(":", 2)[-2]
+        start, _, end = host.partition("-")
+        try:
+            first, last = int(start), int(end or start)
+        except ValueError:
+            continue  # msb reports malformed fixed mappings.
+        if 1 <= first <= last <= 65535:
+            ports.update(range(first, last + 1))
+    return ports
+
+
+def choose_random_ports(names, published_ports):
+    """Choose distinct high TCP ports without checking or reserving host sockets."""
+    names = list(dict.fromkeys(names))
+    if not names:
+        return {}
+    excluded = fixed_tcp_ports(published_ports)
+    candidates = [port for port in range(49152, 65536) if port not in excluded]
+    if len(names) > len(candidates):
+        fail("not enough random TCP ports outside the fixed port mappings")
+    return dict(zip(names, map(str, random.sample(candidates, len(names)))))
 
 
 def git_common_dir(path):
@@ -262,6 +300,16 @@ def main(argv):
 
     if "image" not in settings:
         fail("no image set: add image = \"...\" to the [default] group")
+
+    conflicts = set(settings["random_ports"]) & (set(settings["env"]) | set(settings["secrets"]) | {"SB_PROJECT"})
+    if conflicts:
+        fail(f"random port variable(s) already defined: {', '.join(sorted(conflicts))}")
+
+    random_ports = choose_random_ports(settings["random_ports"], settings["ports"])
+    os.environ.update(random_ports)  # Available to ${VAR} expansion in the configuration.
+    settings["env"] |= random_ports
+    for port in random_ports.values():
+        settings["ports"].append(f"127.0.0.1:{port}:{port}")
 
     flags = [expand(arg) for arg in settings["args"]] + ["-w", workdir]
     if "cpus" in settings:

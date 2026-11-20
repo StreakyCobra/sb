@@ -80,3 +80,9 @@ mounts = ["~/.npmrc:${HOME}/.npmrc:ro"]
 description = "Publish a dev server on host port 3000"
 include = ["npm"]
 ports = ["127.0.0.1:3000:3000"]
+
+[review]
+description = "Publish a per-VM TCP port for a diff viewer"
+# Use SB_DIFIT_PORT as the server port inside the VM.
+# Ports are chosen from 49152-65535 without availability checks or reservations.
+random_ports = ["SB_DIFIT_PORT"]
