@@ -25,7 +25,7 @@ ENV HOME=/home/fabien \
 
 # Pre-create common parents as the user: msb creates missing parents of mount
 # points as root, which would leave them unwritable.
-RUN mkdir -p ~/.config ~/.cache ~/.local/{bin,share,state} \
+RUN mkdir -p ~/.config ~/.cache ~/.local/{bin,share,state} ~/.codex \
     && echo 'eval "$(starship init zsh)"' > ~/.zshrc \
     && curl -fsSL https://claude.ai/install.sh | bash \
     && curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path \
