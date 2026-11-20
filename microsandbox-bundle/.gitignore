@@ -1,0 +1,6 @@
+# makepkg downloads and outputs
+/src/
+/pkg/
+/LICENSE-*
+/microsandbox-*.tar.gz
+/*.pkg.tar.*

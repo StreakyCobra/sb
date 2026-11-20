@@ -1,0 +1,76 @@
+[default]
+image = "localhost/sb:latest"
+command = ["zsh"]
+git_metadata = true
+cpus = 8
+memory = "16G"
+env = { TERM = "foot-direct", COLORTERM = "truecolor", SB_SANDBOX = "msb" }
+volumes = [
+  "sb-pacman:/var/cache/pacman/pkg",
+  "sb-npm:${HOME}/.cache/npm",
+]
+mounts = ["~/.config/starship.toml:${HOME}/.config/starship.toml:ro"]
+
+# --------------------------------------------------------------------------- #
+# Agents                                                                      #
+# --------------------------------------------------------------------------- #
+
+[claude]
+description = "Claude Code with shared history and read-only settings"
+command = ["claude"]
+env = { CLAUDE_CONFIG_DIR = "${HOME}/.claude", DISABLE_AUTOUPDATER = "1" }
+mounts = [
+  "~/.local/share/sb/claude:${HOME}/.claude",
+  "~/.claude/settings.json:${HOME}/.claude/settings.json:ro",
+  "~/.claude/skills:${HOME}/.claude/skills:ro",
+]
+
+[claude.secrets]
+CLAUDE_CODE_OAUTH_TOKEN = { pass = "keys/anthropic-claude-oauth-token", hosts = ["api.anthropic.com"], headers = ["authorization"] }
+
+[opencode]
+description = "opencode with a per-project database and the ChatGPT token"
+command = ["opencode"]
+env = { OPENCODE_DB = "${SB_PROJECT}.db", OPENCODE_DISABLE_AUTOUPDATE = "1" }
+mounts = [
+  "~/.local/share/sb/opencode:${HOME}/.local/share/opencode",
+  "~/.config/opencode:${HOME}/.config/opencode:ro",
+]
+# The refresher on the host keeps this token current; this one is read from
+# your environment (export it, or wrap sb in a function that does).
+secrets = { CHATGPT_ACCESS_TOKEN = { hosts = ["chatgpt.com"], headers = ["authorization"] } }
+
+[mcp]
+description = "Access to MCP servers running on the host"
+host_ports = [1869, 64342]
+
+# --------------------------------------------------------------------------- #
+# Authorized services                                                         #
+# --------------------------------------------------------------------------- #
+
+[github]
+description = "GitHub token (gh, git over HTTPS)"
+secrets = { GH_TOKEN = { pass = "keys/github-token", hosts = ["api.github.com", "github.com"] } }
+
+[circleci]
+description = "CircleCI token"
+secrets = { CIRCLE_TOKEN = { pass = "keys/circleci-token", hosts = ["circleci.com"], headers = ["circle-token"] } }
+
+# --------------------------------------------------------------------------- #
+# Programming ecosystems                                                      #
+# --------------------------------------------------------------------------- #
+
+[java]
+description = "Maven settings and a shared local repository"
+memory = "24G"  # builds need more than the default; replaces [default]'s value
+mounts = ["~/.m2/settings.xml:${HOME}/.m2/settings.xml:ro"]
+volumes = ["sb-m2:${HOME}/.m2/repository"]
+
+[npm]
+description = "npm configuration"
+mounts = ["~/.npmrc:${HOME}/.npmrc:ro"]
+
+[web]
+description = "Publish a dev server on host port 3000"
+include = ["npm"]
+ports = ["127.0.0.1:3000:3000"]
