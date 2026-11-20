@@ -10,6 +10,9 @@ volumes = [
   "sb-npm:${HOME}/.cache/npm",
 ]
 mounts = ["~/.config/starship.toml:${HOME}/.config/starship.toml:ro"]
+# Deny unlisted outbound traffic. Selected groups add their own rules.
+# Gateway DNS is allowed automatically.
+allowlist = []
 
 # --------------------------------------------------------------------------- #
 # Agents                                                                      #
@@ -18,6 +21,7 @@ mounts = ["~/.config/starship.toml:${HOME}/.config/starship.toml:ro"]
 [claude]
 description = "Claude Code with shared history and read-only settings"
 command = ["claude"]
+allowlist = ["api.anthropic.com:443"]
 env = { CLAUDE_CONFIG_DIR = "${HOME}/.claude", DISABLE_AUTOUPDATER = "1" }
 mounts = [
   "~/.local/share/sb/claude:${HOME}/.claude",
@@ -31,6 +35,7 @@ CLAUDE_CODE_OAUTH_TOKEN = { cmd = "pass show keys/anthropic-claude-oauth-token",
 [opencode]
 description = "opencode with a per-project database and the ChatGPT token"
 command = ["opencode"]
+allowlist = ["chatgpt.com:443"]
 env = { OPENCODE_DB = "${SB_PROJECT}.db", OPENCODE_DISABLE_AUTOUPDATE = "1" }
 mounts = [
   "~/.local/share/sb/opencode:${HOME}/.local/share/opencode",
@@ -49,10 +54,12 @@ host_ports = [1869, 64342]
 
 [github]
 description = "GitHub token (gh, git over HTTPS)"
+allowlist = ["api.github.com:443", "github.com:443"]
 secrets = { GH_TOKEN = { cmd = "pass show keys/github-token", hosts = ["api.github.com", "github.com"] } }
 
 [circleci]
 description = "CircleCI token"
+allowlist = ["circleci.com:443"]
 secrets = { CIRCLE_TOKEN = { cmd = "pass show keys/circleci-token", hosts = ["circleci.com"], headers = ["circle-token"] } }
 
 # --------------------------------------------------------------------------- #

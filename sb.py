@@ -23,7 +23,7 @@ DEFAULT_GROUP = "default"
 CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
 DEFAULT_CONFIG = CONFIG_HOME / "sb" / "config.toml"
 
-LIST_KEYS = {"include", "mounts", "volumes", "ports", "host_ports", "args"}
+LIST_KEYS = {"include", "mounts", "volumes", "ports", "host_ports", "args", "allowlist"}
 DICT_KEYS = {"env", "secrets"}
 OTHER_KEYS = {"description", "image", "command", "cpus", "memory", "git_metadata"}
 SECRET_KEYS = {"cmd", "hosts", "headers"}
@@ -48,6 +48,11 @@ def load_groups(path):
         unknown = set(group) - LIST_KEYS - DICT_KEYS - OTHER_KEYS
         if unknown:
             fail(f"group [{name}]: unknown key(s): {', '.join(sorted(unknown))}")
+        if "allowlist" in group:
+            if not isinstance(group["allowlist"], list):
+                fail(f"group [{name}]: 'allowlist' must be a list of rule strings")
+            for entry in group["allowlist"]:
+                allowlist_rule(entry)
         for secret, spec in group.get("secrets", {}).items():
             if not isinstance(spec, dict) or not spec.get("hosts"):
                 fail(f"group [{name}]: secret {secret} needs a 'hosts' list")
@@ -112,6 +117,37 @@ def mount_flags(spec, debug):
             fail(f"mount source does not exist: {source}")
         print(f"# warning: mount source does not exist: {source}", file=sys.stderr)
     return ["--mount-file" if os.path.isfile(source) else "-v", mapping]
+
+
+def allowlist_rule(entry):
+    """Add allow@ and infer TCP for TARGET:PORT or TARGET:PORT-RANGE."""
+    if not isinstance(entry, str):
+        fail("allowlist entries must be non-empty strings")
+    rule = entry.strip().removeprefix("allow@")
+    if not rule or "@" in rule or "," in rule or any(char.isspace() for char in rule):
+        fail(f"invalid allowlist entry: {entry!r}; use [allow@]TARGET[:PROTOCOL[:PORTS]]")
+
+    if rule.startswith("["):
+        target, close, rest = rule.partition("]")
+        if not close or (rest and not rest.startswith(":")):
+            fail(f"invalid allowlist entry: {entry!r}; use [IPv6][:PROTOCOL[:PORTS]]")
+        target += close
+        qualifiers = rest[1:]
+    else:
+        target, _, qualifiers = rule.partition(":")
+    if not target:
+        fail(f"invalid allowlist entry: {entry!r}; target is empty")
+    if qualifiers and all(part.isdecimal() for part in qualifiers.split("-", 1)):
+        rule = f"{target}:tcp:{qualifiers}"
+    return f"allow@{rule}"
+
+
+def allowlist_flags(entries):
+    """Deny unlisted outbound traffic and allow gateway DNS."""
+    flags = ["--net-default-egress", "deny", "--net-rule", "allow@dns"]
+    for entry in entries:
+        flags += ["--net-rule", allowlist_rule(entry)]
+    return flags
 
 
 def git_common_dir(path):
@@ -211,7 +247,8 @@ def main(argv):
         fail("cannot run from the home directory. Change to another directory and try again.")
 
     args, groups, command = parse_args(argv)
-    settings = merge(groups, resolve(groups, args.groups))
+    names = resolve(groups, args.groups)
+    settings = merge(groups, names)
     # Command-line additions behave like one more group applied last.
     settings["ports"] += args.ports
     settings["mounts"] += args.mounts
@@ -243,6 +280,8 @@ def main(argv):
         flags += ["-e", f"{key}={expand(value)}"]
     for port in settings["ports"]:
         flags += ["-p", str(port)]
+    if any("allowlist" in groups[name] for name in names):
+        flags += allowlist_flags(settings["allowlist"])
     for port in settings["host_ports"]:
         flags += ["--net-rule", f"allow@host:tcp:{port}"]
     for name, spec in settings["secrets"].items():
