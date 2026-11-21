@@ -4,6 +4,7 @@ RUN --mount=type=cache,id=pacman-pkg,target=/var/cache/pacman/pkg,sharing=locked
     pacman -Syu --noconfirm --needed \
     bubblewrap \
     curl \
+    direnv \
     foot-terminfo \
     git \
     nodejs \
@@ -12,6 +13,7 @@ RUN --mount=type=cache,id=pacman-pkg,target=/var/cache/pacman/pkg,sharing=locked
     starship \
     sudo \
     zsh \
+    zoxide \
     && rm -rf /var/lib/pacman/sync/* \
     && useradd --create-home --uid 1000 --user-group --shell /bin/zsh fabien \
     && echo 'fabien ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/fabien \
