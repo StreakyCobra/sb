@@ -66,6 +66,10 @@ secrets = { CIRCLE_TOKEN = { cmd = "pass show keys/circleci-token", hosts = ["ci
 # Programming ecosystems                                                      #
 # --------------------------------------------------------------------------- #
 
+[docker]
+description = "Docker and Compose with a sandbox-owned data disk"
+args = ["--mount-owned", "/var/lib/docker:kind=disk,size=10G"]
+
 [java]
 description = "Maven settings and a shared local repository"
 memory = "24G"  # builds need more than the default; replaces [default]'s value
