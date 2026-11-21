@@ -1,5 +1,11 @@
 FROM docker.io/library/archlinux:base
 
+# Keep these in sync with the pacman allowlist in example.toml.
+RUN printf '%s\n' \
+    'Server = https://mirror.puzzle.ch/archlinux/$repo/os/$arch' \
+    'Server = https://mirror.init7.net/archlinux/$repo/os/$arch' \
+    > /etc/pacman.d/mirrorlist
+
 RUN --mount=type=cache,id=pacman-pkg,target=/var/cache/pacman/pkg,sharing=locked \
     pacman -Syu --noconfirm --needed \
     bubblewrap \
