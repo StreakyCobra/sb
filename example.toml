@@ -19,7 +19,6 @@ allowlist = []
 # --------------------------------------------------------------------------- #
 
 [claude]
-description = "Claude Code with shared history and read-only settings"
 command = ["claude"]
 allowlist = ["api.anthropic.com:443"]
 env = { CLAUDE_CONFIG_DIR = "$${HOME}/.claude", DISABLE_AUTOUPDATER = "1" }
@@ -33,7 +32,6 @@ mounts = [
 CLAUDE_CODE_OAUTH_TOKEN = { cmd = "pass show keys/anthropic-claude-oauth-token", hosts = ["api.anthropic.com"], headers = ["authorization"] }
 
 [opencode]
-description = "opencode with a per-project database and the ChatGPT token"
 command = ["opencode"]
 allowlist = ["chatgpt.com:443"]
 env = { OPENCODE_DB = "$${SB_PROJECT}.db", OPENCODE_DISABLE_AUTOUPDATE = "1" }
@@ -45,7 +43,6 @@ mounts = [
 secrets = { CHATGPT_ACCESS_TOKEN = { hosts = ["chatgpt.com"], headers = ["authorization"] } }
 
 [mcp]
-description = "Access to MCP servers running on the host"
 host_ports = [1869, 64342]
 
 # --------------------------------------------------------------------------- #
@@ -53,12 +50,10 @@ host_ports = [1869, 64342]
 # --------------------------------------------------------------------------- #
 
 [github]
-description = "GitHub token (gh, git over HTTPS)"
 allowlist = ["api.github.com:443", "github.com:443"]
 secrets = { GH_TOKEN = { cmd = "pass show keys/github-token", hosts = ["api.github.com", "github.com"] } }
 
 [circleci]
-description = "CircleCI token"
 allowlist = ["circleci.com:443"]
 secrets = { CIRCLE_TOKEN = { cmd = "pass show keys/circleci-token", hosts = ["circleci.com"], headers = ["circle-token"] } }
 
@@ -67,30 +62,24 @@ secrets = { CIRCLE_TOKEN = { cmd = "pass show keys/circleci-token", hosts = ["ci
 # --------------------------------------------------------------------------- #
 
 [pacman]
-description = "Access to the Arch Linux package mirrors configured in the image"
 allowlist = ["mirror.puzzle.ch:443", "mirror.init7.net:443"]
 
 [docker]
-description = "Docker and Compose with a sandbox-owned data disk"
 args = ["--mount-owned", "/var/lib/docker:kind=disk,size=10G"]
 
 [java]
-description = "Maven settings and a shared local repository"
 memory = "24G"  # builds need more than the default; replaces [default]'s value
 mounts = ["~/.m2/settings.xml:$${HOME}/.m2/settings.xml:ro"]
 volumes = ["sb-m2:$${HOME}/.m2/repository"]
 
 [npm]
-description = "npm configuration"
 mounts = ["~/.npmrc:$${HOME}/.npmrc:ro"]
 
 [web]
-description = "Publish a dev server on host port 3000"
 include = ["npm"]
 ports = ["127.0.0.1:3000:3000"]
 
 [review]
-description = "Publish a per-VM TCP port for a diff viewer"
 # Use SB_DIFIT_PORT as the server port inside the VM.
 # Ports are chosen from 49152-65535 without availability checks or reservations.
 random_ports = ["SB_DIFIT_PORT"]

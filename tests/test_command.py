@@ -11,6 +11,13 @@ import sb
 
 
 class CommandTests(unittest.TestCase):
+    def test_description_key_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config.toml"
+            config.write_text('[example]\ndescription = "Example"\n')
+            with self.assertRaisesRegex(SystemExit, r"unknown key\(s\): description"):
+                sb.load_groups(config)
+
     def test_string_command_is_passed_to_shell(self):
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory) / "config.toml"

@@ -27,7 +27,7 @@ DEFAULT_CONFIG = CONFIG_HOME / "sb" / "config.toml"
 
 LIST_KEYS = {"include", "mounts", "volumes", "ports", "host_ports", "args", "allowlist", "random_ports"}
 DICT_KEYS = {"env", "secrets"}
-OTHER_KEYS = {"description", "image", "command", "cpus", "memory", "git_metadata"}
+OTHER_KEYS = {"image", "command", "cpus", "memory", "git_metadata"}
 SECRET_KEYS = {"cmd", "hosts", "headers"}
 BUILTIN_OPTIONS = {"config", "debug", "help", "port", "mount", "env", "skip-cwd", "no-network-filter"}
 
@@ -278,13 +278,12 @@ def parse_args(argv):
                         help="set an environment variable (like env =)")
     parser.set_defaults(groups=[])
     selectable = parser.add_argument_group("groups")
-    for name, group in groups.items():
+    for name in groups:
         if name == DEFAULT_GROUP:
             continue
         if name in BUILTIN_OPTIONS:
             fail(f"group name {name!r} clashes with a built-in option")
-        selectable.add_argument(f"--{name}", dest="groups", action="append_const", const=name,
-                                help=group.get("description"))
+        selectable.add_argument(f"--{name}", dest="groups", action="append_const", const=name)
     parser.add_argument("paths", nargs="*", metavar="PATH", help="files or directories to mount (default: .)")
     args = parser.parse_args(argv)
     for item in args.env:
