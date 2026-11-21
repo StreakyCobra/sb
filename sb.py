@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """sb: compose an `msb run` command from groups defined in a TOML file.
 
-    sb [--config FILE] [--debug] [-p PORT] [-v MOUNT] [-e KEY=VALUE]
+    sb [--config FILE] [--debug] [-s] [--no-network-filter] [-p PORT] [-v MOUNT] [-e KEY=VALUE]
        [--GROUP ...] [PATH ...] [-- COMMAND ...]
 
 Each PATH (default: the current directory) is mounted at the same absolute path
@@ -29,7 +29,7 @@ LIST_KEYS = {"include", "mounts", "volumes", "ports", "host_ports", "args", "all
 DICT_KEYS = {"env", "secrets"}
 OTHER_KEYS = {"description", "image", "command", "cpus", "memory", "git_metadata"}
 SECRET_KEYS = {"cmd", "hosts", "headers"}
-BUILTIN_OPTIONS = {"config", "debug", "help", "port", "mount", "env"}
+BUILTIN_OPTIONS = {"config", "debug", "help", "port", "mount", "env", "skip-cwd", "no-network-filter"}
 
 
 def fail(message):
@@ -266,6 +266,10 @@ def parse_args(argv):
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help=f"groups file (default: {DEFAULT_CONFIG})")
     parser.add_argument("--debug", action="store_true", help="print the msb command instead of running it")
+    parser.add_argument("-s", "--skip-cwd", action="store_true",
+                        help="do not mount the current directory by default; work from home instead")
+    parser.add_argument("--no-network-filter", action="store_true",
+                        help="disable network filtering from configured allowlists")
     parser.add_argument("-p", "--port", dest="ports", action="append", default=[], metavar="PORT",
                         help="publish a port, e.g. 127.0.0.1:3001:3001 (like ports =)")
     parser.add_argument("-v", "--mount", dest="mounts", action="append", default=[], metavar="SRC[:DST[:OPTIONS]]",
@@ -290,10 +294,9 @@ def parse_args(argv):
 
 
 def main(argv):
-    if Path.cwd().resolve() == Path.home().resolve():
-        fail("cannot run from the home directory. Change to another directory and try again.")
-
     args, groups, command = parse_args(argv)
+    if not args.skip_cwd and Path.cwd().resolve() == Path.home().resolve():
+        fail("cannot run from the home directory without --skip-cwd. Change directory or use --skip-cwd.")
     names = resolve(groups, args.groups)
     settings = merge(groups, names)
     # Command-line additions behave like one more group applied last.
@@ -303,7 +306,9 @@ def main(argv):
 
     # Working directory: the first directory passed; the current one when no path
     # is given; the home directory when only files are given (nothing else is mounted).
-    paths = [os.path.realpath(path) for path in args.paths] or [os.getcwd()]
+    paths = [os.path.realpath(path) for path in args.paths]
+    if not paths and not args.skip_cwd:
+        paths = [os.getcwd()]
     workdir = next((path for path in paths if os.path.isdir(path)), str(Path.home()))
     os.environ["SB_PROJECT"] = os.path.basename(workdir)  # usable as $${SB_PROJECT} in the TOML
 
@@ -337,7 +342,7 @@ def main(argv):
         flags += ["-e", f"{key}={expand(value)}"]
     for port in settings["ports"]:
         flags += ["-p", str(port)]
-    if any("allowlist" in groups[name] for name in names):
+    if not args.no_network_filter and any("allowlist" in groups[name] for name in names):
         flags += allowlist_flags(settings["allowlist"])
     for port in settings["host_ports"]:
         flags += ["--net-rule", f"allow@host:tcp:{port}"]

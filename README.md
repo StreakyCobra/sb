@@ -29,6 +29,8 @@ sb --claude -- claude --continue         # Claude Code, resuming the last sessio
 sb --opencode --github ~/Workspace/proj  # opencode with a GitHub token
 sb --debug --claude --java .             # print the msb command instead of running it
 sb --claude -p 127.0.0.1:3001:3001       # extra port (also -v SRC[:DST] and -e KEY=VALUE)
+sb -s                                    # work from sandbox home without mounting the current directory
+sb --no-network-filter                   # ignore configured allowlists for this run
 sb --help                                # list the groups
 ```
 

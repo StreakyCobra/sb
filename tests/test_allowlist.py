@@ -128,6 +128,20 @@ allowlist = ["facebook.com:443"]
         self.assertIn("--net-default-egress", command)
         self.assertIn("allow@facebook.com:tcp:443", command)
 
+    def test_no_network_filter_skips_allowlists_but_keeps_host_ports(self):
+        command = self.debug_command("""
+[default]
+image = "test"
+allowlist = []
+host_ports = [1869]
+[restricted]
+allowlist = ["facebook.com:443"]
+""", "--restricted", "--no-network-filter")
+        self.assertNotIn("--net-default-egress", command)
+        self.assertNotIn("allow@dns", command)
+        self.assertNotIn("allow@facebook.com:tcp:443", command)
+        self.assertIn("allow@host:tcp:1869", command)
+
 
 if __name__ == "__main__":
     unittest.main()
