@@ -332,8 +332,12 @@ def parse_args(argv):
     return args, groups, command
 
 
-def main(argv):
-    args, groups, command = parse_args(argv)
+def build_command(args, groups, command):
+    """Return the msb command line and the secrets it needs, without running it.
+
+    It sets SB_PROJECT and random port variables in os.environ for $${VAR}
+    expansion, and asks git and msb about worktrees and cached images.
+    """
     if not args.skip_cwd and Path.cwd().resolve() == Path.home().resolve():
         fail("cannot run from the home directory without --skip-cwd. Change directory or use --skip-cwd.")
     names = resolve(groups, args.groups)
@@ -403,15 +407,21 @@ def main(argv):
             command = [expand(part) for part in configured_command]
     if command:
         cmd += ["--", *command]
+    return cmd, settings["secrets"]
+
+
+def main(argv):
+    args, groups, command = parse_args(argv)
+    cmd, secrets = build_command(args, groups, command)
 
     if args.debug:
-        for name, spec in settings["secrets"].items():
+        for name, spec in secrets.items():
             source = f"command: {spec['cmd']}" if "cmd" in spec else "host environment"
             print(f"# {name} from {source}")
         print(shlex.join(cmd))
         return
 
-    env = os.environ | {name: secret_value(name, spec) for name, spec in settings["secrets"].items()}
+    env = os.environ | {name: secret_value(name, spec) for name, spec in secrets.items()}
     try:
         os.execvpe("msb", cmd, env)
     except FileNotFoundError:
