@@ -15,6 +15,7 @@ RUN --mount=type=cache,id=pacman-pkg,target=/var/cache/pacman/pkg,sharing=locked
     docker-compose \
     foot-terminfo \
     git \
+    less \
     nodejs \
     npm \
     ripgrep \
