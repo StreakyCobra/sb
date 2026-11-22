@@ -164,15 +164,26 @@ def expand(text):
                   replace, os.path.expanduser(str(text)))
 
 
+def create_directory(path):
+    """Ask whether to create a missing mount source; fail if declined or not interactive."""
+    if not sys.stdin.isatty():
+        fail(f"mount source does not exist: {path}")
+    answer = input(f"mount source does not exist: {path}\nCreate it? [y/N] ")
+    if answer.strip().lower() not in ("y", "yes"):
+        fail(f"mount source does not exist: {path}")
+    os.makedirs(path)
+
+
 def mount_flags(spec, debug):
     """'SRC[:DST[:OPTIONS]]' -> msb flags; DST defaults to SRC."""
     source, _, rest = expand(spec).partition(":")
     target, _, options = rest.partition(":")
     mapping = ":".join(part for part in (source, target or source, options) if part)
     if not os.path.exists(source):
-        if not debug:
-            fail(f"mount source does not exist: {source}")
-        print(f"# warning: mount source does not exist: {source}", file=sys.stderr)
+        if debug:
+            print(f"# warning: mount source does not exist: {source}", file=sys.stderr)
+        else:
+            create_directory(source)
     return ["--mount-file" if os.path.isfile(source) else "-v", mapping]
 
 
