@@ -51,6 +51,30 @@ command = 'exec codex -c "projects.\\"$(git rev-parse --show-toplevel)\\".trust_
                     command = shlex.split(output.getvalue())
                     self.assertEqual(command[command.index("--") + 1:], expected)
 
+    def test_debug_prints_secret_commands_without_running_them(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config.toml"
+            config.write_text("""\
+[default]
+image = "test"
+[default.secrets]
+TOKEN = { cmd = "pass show 'keys/$${SB_TEST_KEY} token'", hosts = ["example.com"] }
+OTHER = { hosts = ["example.com"] }
+""")
+            output = io.StringIO()
+            with (patch.dict(os.environ, {"SB_TEST_KEY": "github"}),
+                  patch.object(sb, "image_cached", return_value=True),
+                  patch.object(sb.subprocess, "run") as run,
+                  contextlib.redirect_stdout(output)):
+                sb.main(["--debug", "--config", str(config), directory])
+            run.assert_not_called()
+            lines = output.getvalue().splitlines()
+            self.assertEqual(lines[:2], [
+                "export TOKEN=\"$(pass show 'keys/github token' | head -n 1)\"",
+                "# OTHER from host environment",
+            ])
+            self.assertEqual(shlex.split(lines[2])[:2], ["msb", "run"])
+
     def test_invalid_command_type_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory) / "config.toml"

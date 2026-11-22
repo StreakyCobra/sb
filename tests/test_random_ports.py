@@ -186,7 +186,7 @@ secrets = { TOKEN = { cmd = "pass show token", hosts = ["example.com"] } }
 """)
         execute.assert_not_called()
         secret.assert_not_called()
-        self.assertEqual(command[:2], ["msb", "run"])
+        self.assertEqual(command[:4], ["export", "TOKEN=$(pass show token | head -n 1)", "msb", "run"])
         self.assertIn("-p", command)
         self.assertEqual(stderr, "")
 

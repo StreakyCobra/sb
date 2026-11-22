@@ -280,18 +280,24 @@ def secret_flag(name, spec):
     return ["--secret", f"{name}{options}@{','.join(spec['hosts'])}"]
 
 
+def secret_command(name, spec):
+    """The expanded argument list of a secret's 'cmd' entry."""
+    try:
+        command = [expand(arg) for arg in shlex.split(spec["cmd"])]
+    except ValueError:
+        fail(f"secret {name}: invalid command quoting")
+    if not command:
+        fail(f"secret {name}: command is empty")
+    return command
+
+
 def secret_value(name, spec):
     if "cmd" not in spec:
         if name not in os.environ:
             fail(f"secret {name}: not set in the environment and no 'cmd' entry given")
         return os.environ[name]
     try:
-        command = [expand(arg) for arg in shlex.split(spec["cmd"])]
-        if not command:
-            fail(f"secret {name}: command is empty")
-        result = subprocess.run(command, check=False, capture_output=True, text=True)
-    except ValueError:
-        fail(f"secret {name}: invalid command quoting")
+        result = subprocess.run(secret_command(name, spec), check=False, capture_output=True, text=True)
     except OSError:
         fail(f"secret {name}: could not execute command")
     if result.returncode != 0:
@@ -421,9 +427,12 @@ def main(argv):
     cmd, secrets = build_command(args, groups, command)
 
     if args.debug:
+        # A runnable script: secrets are read like sb does (first output line), not here.
         for name, spec in secrets.items():
-            source = f"command: {spec['cmd']}" if "cmd" in spec else "host environment"
-            print(f"# {name} from {source}")
+            if "cmd" in spec:
+                print(f'export {name}="$({shlex.join(secret_command(name, spec))} | head -n 1)"')
+            else:
+                print(f"# {name} from host environment")
         print(shlex.join(cmd))
         return
 
