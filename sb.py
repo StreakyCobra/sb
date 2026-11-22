@@ -188,7 +188,7 @@ def mount_flags(spec, debug):
 
 
 def allowlist_rule(entry):
-    """Add allow@ and infer TCP for TARGET:PORT or TARGET:PORT-RANGE."""
+    """Add allow@, infer TCP for TARGET:PORT[-PORT], and default a bare TARGET to tcp:443 (except dns)."""
     if not isinstance(entry, str):
         fail("allowlist entries must be non-empty strings")
     rule = entry.strip().removeprefix("allow@")
@@ -207,6 +207,8 @@ def allowlist_rule(entry):
         fail(f"invalid allowlist entry: {entry!r}; target is empty")
     if qualifiers and all(part.isdecimal() for part in qualifiers.split("-", 1)):
         rule = f"{target}:tcp:{qualifiers}"
+    elif not qualifiers and target != "dns":
+        rule = f"{target}:tcp:443"
     return f"allow@{rule}"
 
 

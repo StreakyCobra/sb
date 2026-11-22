@@ -16,7 +16,7 @@ class AllowlistTests(unittest.TestCase):
             "allow@chatgpt.com:tcp:443": "allow@chatgpt.com:tcp:443",
             "google.com:tcp:443": "allow@google.com:tcp:443",
             "facebook.com:443": "allow@facebook.com:tcp:443",
-            "instagram.com": "allow@instagram.com",
+            "instagram.com": "allow@instagram.com:tcp:443",
         }
         for entry, expected in cases.items():
             with self.subTest(entry=entry):
@@ -32,7 +32,8 @@ class AllowlistTests(unittest.TestCase):
             "192.0.2.1:443": "allow@192.0.2.1:tcp:443",
             "[2001:db8::1]:443": "allow@[2001:db8::1]:tcp:443",
             "[2001:db8::1]:tcp:443": "allow@[2001:db8::1]:tcp:443",
-            "[2001:db8::1]": "allow@[2001:db8::1]",
+            "[2001:db8::1]": "allow@[2001:db8::1]:tcp:443",
+            "example.com:tcp": "allow@example.com:tcp",
             "dns": "allow@dns",
         }
         for entry, expected in cases.items():
