@@ -18,6 +18,7 @@ RUN --mount=type=cache,id=pacman-pkg,target=/var/cache/pacman/pkg,sharing=locked
     less \
     nodejs \
     npm \
+    nvim \
     ripgrep \
     starship \
     sudo \
