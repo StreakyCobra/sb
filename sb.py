@@ -207,6 +207,18 @@ def allowlist_flags(entries):
     return flags
 
 
+def network_flags(settings, filtered):
+    """Network policy flags; `filtered` applies the allowlist (a selected group set one)."""
+    flags = allowlist_flags(settings["allowlist"]) if filtered else []
+    for port in settings["host_ports"]:
+        flags += ["--net-rule", f"allow@host:tcp:{port}"]
+    if settings.get("tls_intercept"):
+        flags += ["--tls-intercept"]
+    if "net_strict" in settings:
+        flags += [f"--net-strict={str(settings['net_strict']).lower()}"]
+    return flags
+
+
 def fixed_tcp_ports(specs):
     """Collect configured host TCP ports, including ranges, to avoid reusing them."""
     ports = set()
@@ -385,14 +397,8 @@ def build_command(args, groups, command):
         flags += ["-e", f"{key}={expand(value)}"]
     for port in settings["ports"]:
         flags += ["-p", str(port)]
-    if not args.no_network_filter and any("allowlist" in groups[name] for name in names):
-        flags += allowlist_flags(settings["allowlist"])
-    for port in settings["host_ports"]:
-        flags += ["--net-rule", f"allow@host:tcp:{port}"]
-    if settings.get("tls_intercept"):
-        flags += ["--tls-intercept"]
-    if "net_strict" in settings:
-        flags += [f"--net-strict={str(settings['net_strict']).lower()}"]
+    filtered = not args.no_network_filter and any("allowlist" in groups[name] for name in names)
+    flags += network_flags(settings, filtered)
     for name, spec in settings["secrets"].items():
         flags += secret_flag(name, spec)
 
