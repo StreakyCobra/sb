@@ -384,7 +384,7 @@ def build_command(args, groups, command):
     if not paths and not args.skip_cwd:
         paths = [os.getcwd()]
     workdir = next((path for path in paths if os.path.isdir(path)), str(Path.home()))
-    os.environ["SB_PROJECT"] = os.path.basename(workdir)  # usable as $${SB_PROJECT} in the TOML
+    os.environ["SB_PROJECT"] = "workspace" if args.skip_cwd else os.path.basename(workdir)
 
     if "image" not in settings:
         fail("no image set: add image = \"...\" to the [default] group")

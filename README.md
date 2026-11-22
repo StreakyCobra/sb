@@ -35,7 +35,8 @@ sb --help                                # list the groups
 ```
 
 Paths are mounted at the same location as on the host; the first directory is
-the working directory. Secrets are read from `pass` (or the environment) and
+the working directory. `SB_PROJECT` is the working directory's name, or
+`workspace` when `-s` is used. Secrets are read from `pass` (or the environment) and
 injected by msb on the way out: the sandbox only sees placeholders. See
 `example.toml` for the group syntax.
 
