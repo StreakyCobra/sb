@@ -25,16 +25,75 @@ DEFAULT_GROUP = "default"
 CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
 DEFAULT_CONFIG = CONFIG_HOME / "sb" / "config.toml"
 
-LIST_KEYS = {"include", "mounts", "volumes", "ports", "host_ports", "args", "allowlist", "random_ports"}
-DICT_KEYS = {"env", "secrets"}
-BOOL_KEYS = {"tls_intercept", "net_strict"}
-OTHER_KEYS = {"image", "command", "cpus", "memory", "git_metadata"} | BOOL_KEYS
 SECRET_KEYS = {"cmd", "hosts", "headers"}
 BUILTIN_OPTIONS = {"config", "debug", "help", "port", "mount", "env", "skip-cwd", "no-network-filter"}
 
 
 def fail(message):
     sys.exit(f"sb: {message}")
+
+
+# Validators take (key, value) and return an error message, or None when valid.
+
+def check_command(key, value):
+    if not (isinstance(value, str) or
+            isinstance(value, list) and all(isinstance(arg, str) for arg in value)):
+        return f"'{key}' must be a string or a list of strings"
+
+
+def check_bool(key, value):
+    if not isinstance(value, bool):
+        return f"'{key}' must be true or false"
+
+
+def check_allowlist(key, value):
+    if not isinstance(value, list):
+        return f"'{key}' must be a list of rule strings"
+    for entry in value:
+        allowlist_rule(entry)  # Fails with its own message.
+
+
+def check_random_ports(key, value):
+    if not isinstance(value, list):
+        return f"'{key}' must be a list of environment variable names"
+    for variable in value:
+        if not isinstance(variable, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", variable):
+            return f"invalid random port variable: {variable!r}"
+
+
+def check_secrets(key, value):
+    for secret, spec in value.items():
+        if not isinstance(spec, dict) or not spec.get("hosts"):
+            return f"secret {secret} needs a 'hosts' list"
+        unknown = set(spec) - SECRET_KEYS
+        if unknown:
+            return f"secret {secret}: unknown key(s): {', '.join(sorted(unknown))}"
+        if "cmd" in spec and (not isinstance(spec["cmd"], str) or not spec["cmd"].strip()):
+            return f"secret {secret}: 'cmd' must be a non-empty string"
+
+
+# How groups combine each key: lists are appended, tables merged (later keys
+# win), single values replaced. The validator runs on each group's own value.
+LIST, TABLE, VALUE = "list", "table", "value"
+KEYS = {
+    "include": (LIST, None),
+    "mounts": (LIST, None),
+    "volumes": (LIST, None),
+    "ports": (LIST, None),
+    "host_ports": (LIST, None),
+    "args": (LIST, None),
+    "allowlist": (LIST, check_allowlist),
+    "random_ports": (LIST, check_random_ports),
+    "env": (TABLE, None),
+    "secrets": (TABLE, check_secrets),
+    "image": (VALUE, None),
+    "command": (VALUE, check_command),
+    "cpus": (VALUE, None),
+    "memory": (VALUE, None),
+    "git_metadata": (VALUE, None),
+    "tls_intercept": (VALUE, check_bool),
+    "net_strict": (VALUE, check_bool),
+}
 
 
 def load_groups(path):
@@ -48,36 +107,12 @@ def load_groups(path):
     for name, group in groups.items():
         if not isinstance(group, dict):
             fail(f"{path}: top-level key {name!r} must be a [group] table")
-        unknown = set(group) - LIST_KEYS - DICT_KEYS - OTHER_KEYS
+        unknown = set(group) - set(KEYS)
         if unknown:
             fail(f"group [{name}]: unknown key(s): {', '.join(sorted(unknown))}")
-        if "command" in group:
-            command = group["command"]
-            if not (isinstance(command, str) or
-                    isinstance(command, list) and all(isinstance(arg, str) for arg in command)):
-                fail(f"group [{name}]: 'command' must be a string or a list of strings")
-        for key in sorted(BOOL_KEYS & set(group)):
-            if not isinstance(group[key], bool):
-                fail(f"group [{name}]: '{key}' must be true or false")
-        if "allowlist" in group:
-            if not isinstance(group["allowlist"], list):
-                fail(f"group [{name}]: 'allowlist' must be a list of rule strings")
-            for entry in group["allowlist"]:
-                allowlist_rule(entry)
-        if "random_ports" in group:
-            if not isinstance(group["random_ports"], list):
-                fail(f"group [{name}]: 'random_ports' must be a list of environment variable names")
-            for variable in group["random_ports"]:
-                if not isinstance(variable, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", variable):
-                    fail(f"group [{name}]: invalid random port variable: {variable!r}")
-        for secret, spec in group.get("secrets", {}).items():
-            if not isinstance(spec, dict) or not spec.get("hosts"):
-                fail(f"group [{name}]: secret {secret} needs a 'hosts' list")
-            unknown = set(spec) - SECRET_KEYS
-            if unknown:
-                fail(f"group [{name}]: secret {secret}: unknown key(s): {', '.join(sorted(unknown))}")
-            if "cmd" in spec and (not isinstance(spec["cmd"], str) or not spec["cmd"].strip()):
-                fail(f"group [{name}]: secret {secret}: 'cmd' must be a non-empty string")
+        for key, (_, check) in KEYS.items():
+            if key in group and check and (message := check(key, group[key])):
+                fail(f"group [{name}]: {message}")
     return groups
 
 
@@ -103,13 +138,14 @@ def resolve(groups, selected):
 
 
 def merge(groups, names):
-    """Lists are appended, tables merged (later keys win), single values replaced."""
-    merged = {key: [] for key in LIST_KEYS} | {key: {} for key in DICT_KEYS}
+    """Combine groups in order, following each key's kind in KEYS."""
+    merged = {key: [] if kind == LIST else {} for key, (kind, _) in KEYS.items() if kind != VALUE}
     for name in names:
         for key, value in groups[name].items():
-            if key in LIST_KEYS:
+            kind = KEYS[key][0]
+            if kind == LIST:
                 merged[key] += value
-            elif key in DICT_KEYS:
+            elif kind == TABLE:
                 merged[key] |= value
             else:
                 merged[key] = value
