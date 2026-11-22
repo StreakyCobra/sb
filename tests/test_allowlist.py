@@ -142,6 +142,42 @@ allowlist = ["facebook.com:443"]
         self.assertNotIn("allow@facebook.com:tcp:443", command)
         self.assertIn("allow@host:tcp:1869", command)
 
+    def test_tls_and_strict_flags_are_omitted_by_default(self):
+        command = self.debug_command('[default]\nimage = "test"\n')
+        self.assertNotIn("--tls-intercept", command)
+        self.assertFalse(any(arg.startswith("--net-strict") for arg in command))
+
+    def test_tls_intercept_and_net_strict_flags(self):
+        command = self.debug_command("""
+[default]
+image = "test"
+tls_intercept = true
+net_strict = true
+[relaxed]
+tls_intercept = false
+net_strict = false
+""")
+        self.assertIn("--tls-intercept", command)
+        self.assertIn("--net-strict=true", command)
+        command = self.debug_command("""
+[default]
+image = "test"
+tls_intercept = true
+net_strict = true
+[relaxed]
+tls_intercept = false
+net_strict = false
+""", "--relaxed")
+        self.assertNotIn("--tls-intercept", command)
+        self.assertIn("--net-strict=false", command)
+        self.assertNotIn("--net-strict=true", command)
+
+    def test_tls_and_strict_settings_must_be_booleans(self):
+        for key in ("tls_intercept", "net_strict"):
+            for value in ('"false"', "0", "[]"):
+                with self.subTest(key=key, value=value), self.assertRaises(SystemExit):
+                    self.load_config(f"[default]\n{key} = {value}\n")
+
 
 if __name__ == "__main__":
     unittest.main()

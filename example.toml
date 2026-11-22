@@ -13,6 +13,11 @@ mounts = ["~/.config/starship.toml:$${HOME}/.config/starship.toml:ro"]
 # Deny unlisted outbound traffic. Selected groups add their own rules.
 # Gateway DNS is allowed automatically.
 allowlist = []
+# msb's strict mode (on by default) blocks HTTPS allowed only by a domain rule
+# unless TLS interception lets msb check the requested host. Intercept TLS
+# (msb installs its CA in the guest), or turn strict mode off.
+tls_intercept = true
+# net_strict = false
 
 # --------------------------------------------------------------------------- #
 # Agents                                                                      #

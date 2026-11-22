@@ -27,7 +27,8 @@ DEFAULT_CONFIG = CONFIG_HOME / "sb" / "config.toml"
 
 LIST_KEYS = {"include", "mounts", "volumes", "ports", "host_ports", "args", "allowlist", "random_ports"}
 DICT_KEYS = {"env", "secrets"}
-OTHER_KEYS = {"image", "command", "cpus", "memory", "git_metadata"}
+BOOL_KEYS = {"tls_intercept", "net_strict"}
+OTHER_KEYS = {"image", "command", "cpus", "memory", "git_metadata"} | BOOL_KEYS
 SECRET_KEYS = {"cmd", "hosts", "headers"}
 BUILTIN_OPTIONS = {"config", "debug", "help", "port", "mount", "env", "skip-cwd", "no-network-filter"}
 
@@ -55,6 +56,9 @@ def load_groups(path):
             if not (isinstance(command, str) or
                     isinstance(command, list) and all(isinstance(arg, str) for arg in command)):
                 fail(f"group [{name}]: 'command' must be a string or a list of strings")
+        for key in sorted(BOOL_KEYS & set(group)):
+            if not isinstance(group[key], bool):
+                fail(f"group [{name}]: '{key}' must be true or false")
         if "allowlist" in group:
             if not isinstance(group["allowlist"], list):
                 fail(f"group [{name}]: 'allowlist' must be a list of rule strings")
@@ -345,6 +349,10 @@ def main(argv):
         flags += allowlist_flags(settings["allowlist"])
     for port in settings["host_ports"]:
         flags += ["--net-rule", f"allow@host:tcp:{port}"]
+    if settings.get("tls_intercept"):
+        flags += ["--tls-intercept"]
+    if "net_strict" in settings:
+        flags += [f"--net-strict={str(settings['net_strict']).lower()}"]
     for name, spec in settings["secrets"].items():
         flags += secret_flag(name, spec)
 
