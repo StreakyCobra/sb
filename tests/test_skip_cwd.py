@@ -39,6 +39,24 @@ class SkipCwdTests(unittest.TestCase):
                  self.assertRaisesRegex(SystemExit, "--skip-cwd"):
                 sb.main(["--config", str(config)])
 
+    def test_skip_cwd_disables_git_metadata_for_explicit_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config.toml"
+            config.write_text('[default]\nimage = "test"\ngit_metadata = true\n')
+            for option in (None, "-s", "--skip-cwd"):
+                with self.subTest(option=option), \
+                     patch.object(sb, "git_common_dir", return_value=directory) as git_common_dir, \
+                     patch.object(sb, "image_cached", return_value=True), \
+                     patch.dict(os.environ), contextlib.redirect_stdout(io.StringIO()):
+                    args = ["--config", str(config), "--debug"]
+                    if option:
+                        args.append(option)
+                    sb.main([*args, directory])
+                    if option:
+                        git_common_dir.assert_not_called()
+                    else:
+                        git_common_dir.assert_called_once_with(os.path.realpath(directory))
+
 
 if __name__ == "__main__":
     unittest.main()

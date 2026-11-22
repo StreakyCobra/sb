@@ -405,7 +405,7 @@ def build_command(args, groups, command):
     if "memory" in settings:
         flags += ["--memory", str(settings["memory"])]
     mounts = list(dict.fromkeys(paths))
-    if settings.get("git_metadata"):
+    if settings.get("git_metadata") and not args.skip_cwd:
         mounts += [common for path in paths if os.path.isdir(path)
                    if (common := git_common_dir(path)) and common not in mounts]
     for spec in mounts + settings["mounts"]:
