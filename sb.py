@@ -164,8 +164,8 @@ def allowlist_rule(entry):
 
 
 def allowlist_flags(entries):
-    """Deny unlisted outbound traffic and allow gateway DNS."""
-    flags = ["--net-default-egress", "deny", "--net-rule", "allow@dns"]
+    """Deny unlisted outbound traffic; domain rules also allow their own DNS lookups."""
+    flags = ["--net-default-egress", "deny"]
     for entry in entries:
         flags += ["--net-rule", allowlist_rule(entry)]
     return flags

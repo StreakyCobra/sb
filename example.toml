@@ -11,7 +11,7 @@ volumes = [
 ]
 mounts = ["~/.config/starship.toml:$${HOME}/.config/starship.toml:ro"]
 # Deny unlisted outbound traffic. Selected groups add their own rules.
-# Gateway DNS is allowed automatically.
+# Only listed domains resolve; add "dns" to allow every DNS lookup.
 allowlist = []
 # msb's strict mode (on by default) blocks HTTPS allowed only by a domain rule
 # unless TLS interception lets msb check the requested host. Intercept TLS

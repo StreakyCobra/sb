@@ -75,7 +75,6 @@ allowlist = ["other.com"]
         ])
         self.assertEqual(sb.allowlist_flags(settings["allowlist"]), [
             "--net-default-egress", "deny",
-            "--net-rule", "allow@dns",
             "--net-rule", "allow@example.com:tcp:443",
             "--net-rule", "allow@mcp.kagi.com:tcp:443",
             "--net-rule", "allow@chatgpt.com:tcp:443",
@@ -101,7 +100,6 @@ host_ports = [1869]
         start = command.index("--net-default-egress")
         self.assertEqual(command[start:], [
             "--net-default-egress", "deny",
-            "--net-rule", "allow@dns",
             "--net-rule", "allow@host:tcp:1869",
             "test",
         ])
@@ -141,6 +139,12 @@ allowlist = ["facebook.com:443"]
         self.assertNotIn("allow@dns", command)
         self.assertNotIn("allow@facebook.com:tcp:443", command)
         self.assertIn("allow@host:tcp:1869", command)
+
+    def test_dns_is_only_allowed_when_listed(self):
+        command = self.debug_command('[default]\nimage = "test"\nallowlist = ["example.com"]\n')
+        self.assertNotIn("allow@dns", command)
+        command = self.debug_command('[default]\nimage = "test"\nallowlist = ["dns", "example.com"]\n')
+        self.assertIn("allow@dns", command)
 
     def test_tls_and_strict_flags_are_omitted_by_default(self):
         command = self.debug_command('[default]\nimage = "test"\n')
