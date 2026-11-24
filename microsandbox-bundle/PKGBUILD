@@ -1,7 +1,7 @@
 # Maintainer: Fabien Dubosson <fabien.dubosson@gmail.com>
 
 pkgname=microsandbox-bundle
-pkgver=0.7.16
+pkgver=0.8.1
 pkgrel=1
 pkgdesc="microVM sandboxes (official msb release bundle with its matching libkrunfw)"
 arch=('x86_64' 'aarch64')
@@ -21,8 +21,8 @@ source_aarch64=("microsandbox-$pkgver-aarch64.tar.gz::$_relurl/microsandbox-linu
 # The bundle hashes match the release's checksums.sha256. That file comes from
 # the same GitHub release, so this pins the download but doesn't prove who built it.
 sha256sums=('a276ca3381fefb9cde42fccae847856085c76027557d62eee83f057eb6c53433')
-sha256sums_x86_64=('1f09ec7057bfcccb70e1713eb61061f15fa759b45e147759eb0b30aa7f5cb3bd')
-sha256sums_aarch64=('47e2e3238f31d914eba2a7e7ce328848da4673a1457ef2222f71589fe1da6f83')
+sha256sums_x86_64=('51f1969bb2f6ff648941b11c345fba5a9e83ab7f7259c63170f59cd0b74c3cb4')
+sha256sums_aarch64=('4ebdbecb7bc737d7e2e0c58d60af9b8866f1c9a3164971367b77ca4efaf0cc49')
 
 build() {
   cd "$srcdir"

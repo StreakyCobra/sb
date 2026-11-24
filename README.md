@@ -64,7 +64,7 @@ format = "[\\[$env_value\\]]($style) "
 style = "bold blue"
 ```
 
-## Known limitations (msb 0.7.16)
+## Known limitations (msb 0.8.1)
 
 - Binaries can't be executed from mounted folders, so the tools live in the
   image and self-updates are disabled.
