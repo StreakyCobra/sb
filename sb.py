@@ -378,13 +378,21 @@ def build_command(args, groups, command):
     settings["mounts"] += args.mounts
     settings["env"] |= dict(item.split("=", 1) for item in args.env)
 
-    # Working directory: the first directory passed; the current one when no path
-    # is given; the home directory when only files are given (nothing else is mounted).
     paths = [os.path.realpath(path) for path in args.paths]
     if not paths and not args.skip_cwd:
         paths = [os.getcwd()]
-    workdir = next((path for path in paths if os.path.isdir(path)), str(Path.home()))
-    os.environ["SB_PROJECT"] = "workspace" if args.skip_cwd else os.path.basename(workdir)
+
+    workdir = str(Path.home())
+    project = "workspace"
+    if args.skip_cwd:
+        workdir = next((path for path in paths if os.path.isdir(path)), workdir)
+    elif paths:
+        ancestor = os.path.commonpath([os.path.dirname(path) if os.path.isfile(path) else path
+                                       for path in paths])
+        if ancestor != os.path.sep:
+            workdir = ancestor
+            project = os.path.basename(ancestor)
+    os.environ["SB_PROJECT"] = project
 
     if "image" not in settings:
         fail("no image set: add image = \"...\" to the [default] group")

@@ -34,9 +34,12 @@ sb --no-network-filter                   # ignore configured allowlists for this
 sb --help                                # list the groups
 ```
 
-Paths are mounted at the same location as on the host; the first directory is
-the working directory. `SB_PROJECT` is the working directory's name, or
-`workspace` when `-s` is used. The `-s` option also disables automatic
+Paths are mounted at the same location as on the host. The sandbox starts in
+their deepest shared directory, using each file's parent directory. This does
+not mount any additional host paths. `SB_PROJECT` is the starting directory's
+name. If the shared directory is `/`, the sandbox starts in home and uses
+`SB_PROJECT=workspace`. With `-s`, it starts in the first explicit directory
+or in home and always uses `SB_PROJECT=workspace`. The `-s` option also disables automatic
 `git_metadata` mounts, even for explicit paths. Secrets are read from `pass` (or
 the environment) and injected by msb on the way out: the sandbox only sees placeholders. See
 `example.toml` for the group syntax.
