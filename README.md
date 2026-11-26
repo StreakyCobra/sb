@@ -6,9 +6,12 @@ Personal tooling to run coding agents (Claude Code, opencode) in throwaway
 
 ## Setup
 
-Requires KVM, Podman, `pass` and Python 3.11+.
+Requires KVM, Podman, `pass` and Python 3.11+. The group picker uses Prompt Toolkit 3.
 
 ```bash
+# Group picker on Arch Linux
+sudo pacman -S python-prompt_toolkit
+
 # msb, packaged with its matching libkrunfw
 (cd microsandbox-bundle && makepkg -si)
 
@@ -24,15 +27,29 @@ cp example.toml ~/.config/sb/config.toml
 ## Usage
 
 ```bash
-sb                                       # shell in the current directory
+sb                                       # choose groups and launch the sandbox
 sb --claude -- claude --continue         # Claude Code, resuming the last session
 sb --opencode --github ~/Workspace/proj  # opencode with a GitHub token
 sb --debug --claude --java .             # print the msb command instead of running it
+sb --no-picker --java                   # launch with Java without opening the picker
 sb --claude -p 127.0.0.1:3001:3001       # extra port (also -v SRC[:DST] and -e KEY=VALUE)
 sb -s                                    # work from sandbox home without mounting the current directory
 sb --no-network-filter                   # ignore configured allowlists for this run
 sb --help                                # list the groups
 ```
+
+In a terminal, `sb` opens the group picker. Flags such as `--java` check those
+groups in advance. The `[default]` group always applies if it exists.
+
+- Use the arrow keys or `j` and `k` to move.
+- Type other characters to filter by letters in order. For example, `pythn` matches
+  `python`. Use `J` or `K` to search for those letters.
+- Press Space to toggle the highlighted group and clear the search.
+- Press Backspace to clear the entire search. Checked groups stay checked while you search.
+- Press Enter to confirm, or Esc to cancel.
+
+If input or output is redirected, `sb` skips the picker and uses the group flags directly.
+Groups apply in the order you check them. Groups from flags start in flag order.
 
 Paths are mounted at the same location as on the host. The sandbox starts in
 their deepest shared directory, using each file's parent directory. This does

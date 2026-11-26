@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """sb: compose an `msb run` command from groups defined in a TOML file.
 
-    sb [--config FILE] [--debug] [-s] [--no-network-filter] [-p PORT] [-v MOUNT] [-e KEY=VALUE]
+    sb [--config FILE] [--debug] [--no-picker] [-s] [--no-network-filter]
+       [-p PORT] [-v MOUNT] [-e KEY=VALUE]
        [--GROUP ...] [PATH ...] [-- COMMAND ...]
 
 Each PATH (default: the current directory) is mounted at the same absolute path
 in the sandbox; the first directory becomes the working directory. The group
-named "default" is always applied; other groups are selected with --GROUP.
+named "default" is always applied. In a terminal, use the picker to select
+other groups; --GROUP preselects a group.
 -p, -v and -e add to the ports, mounts and env of the selected groups.
 See example.toml for the file format.
 """
@@ -26,7 +28,9 @@ CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
 DEFAULT_CONFIG = CONFIG_HOME / "sb" / "config.toml"
 
 SECRET_KEYS = {"cmd", "hosts", "headers"}
-BUILTIN_OPTIONS = {"config", "debug", "help", "port", "mount", "env", "skip-cwd", "no-network-filter"}
+BUILTIN_OPTIONS = {
+    "config", "debug", "help", "port", "mount", "env", "skip-cwd", "no-network-filter", "no-picker",
+}
 
 
 def fail(message):
@@ -325,7 +329,7 @@ def parse_args(argv):
         split = argv.index("--")
         argv, command = argv[:split], argv[split + 1:]
 
-    pre = argparse.ArgumentParser(add_help=False)
+    pre = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     pre.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     config = pre.parse_known_args(argv)[0].config
     groups = load_groups(config)
@@ -337,6 +341,7 @@ def parse_args(argv):
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help=f"groups file (default: {DEFAULT_CONFIG})")
     parser.add_argument("--debug", action="store_true", help="print the msb command instead of running it")
+    parser.add_argument("--no-picker", action="store_true", help="use the group flags and skip the interactive picker")
     parser.add_argument("-s", "--skip-cwd", action="store_true",
                         help="do not mount the current directory by default; work from home instead")
     parser.add_argument("--no-network-filter", action="store_true",
@@ -354,13 +359,89 @@ def parse_args(argv):
             continue
         if name in BUILTIN_OPTIONS:
             fail(f"group name {name!r} clashes with a built-in option")
-        selectable.add_argument(f"--{name}", dest="groups", action="append_const", const=name)
+        selectable.add_argument(f"--{name}", dest="groups", action="append_const", const=name,
+                                help="preselect this group")
     parser.add_argument("paths", nargs="*", metavar="PATH", help="files or directories to mount (default: .)")
     args = parser.parse_args(argv)
     for item in args.env:
         if "=" not in item:
             parser.error(f"-e/--env expects KEY=VALUE, got {item!r}")
     return args, groups, command
+
+
+def pick_groups(names, preselected, has_default):
+    try:
+        from prompt_toolkit.application import Application
+        from prompt_toolkit.completion import CompleteEvent, FuzzyCompleter, WordCompleter
+        from prompt_toolkit.document import Document
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.keys import Keys
+        from prompt_toolkit.layout import HSplit, Layout
+        from prompt_toolkit.styles import Style
+        from prompt_toolkit.widgets import CheckboxList, Label
+    except ModuleNotFoundError:
+        fail("install prompt_toolkit to open the group picker, or use --no-picker")
+
+    class GroupList(CheckboxList):
+        def show_matches(self, matches, keep_focus=False):
+            focused = self.values[self._selected_index][0] if keep_focus and self.values else None
+            self.values = matches
+            self._selected_index = next((i for i, (name, _) in enumerate(matches) if name == focused), 0)
+
+        def toggle_focused(self):
+            if self.values:
+                super()._handle_enter()
+
+        def _get_text_fragments(self):
+            if not self.values:
+                return [("", "No matching groups")]
+            return super()._get_text_fragments()
+
+    labels = {name: name if name.isprintable() else repr(name) for name in names}
+    all_choices = list(labels.items())
+    choices = GroupList(all_choices, default_values=list(dict.fromkeys(preselected)), select_character="x")
+    # Replace the widget's first-letter navigation with fuzzy search.
+    choices.control.get_key_bindings().remove(Keys.Any)
+    completer = FuzzyCompleter(WordCompleter(names, sentence=True), WORD=True)
+    query = ""
+    keys = KeyBindings()
+
+    @keys.add(Keys.Any)
+    def search(event):
+        nonlocal query
+        if event.data.isprintable():
+            query += event.data
+            matches = completer.get_completions(Document(query), CompleteEvent())
+            choices.show_matches([(match.text, labels[match.text]) for match in matches])
+
+    @keys.add(" ", eager=True)
+    @keys.add("backspace", eager=True)
+    def toggle_or_clear(event):
+        nonlocal query
+        if event.data == " ":
+            choices.toggle_focused()
+        if query:
+            query = ""
+            choices.show_matches(all_choices, keep_focus=True)
+
+    @keys.add("enter", eager=True)
+    def confirm(event):
+        event.app.exit(result=choices.current_values)
+
+    @keys.add("escape")
+    @keys.add("c-c")
+    def cancel(event):
+        event.app.exit()
+
+    title = "Select groups ([default] always applies)" if has_default else "Select groups"
+    layout = Layout(HSplit([
+        Label(title),
+        Label("↑/↓ or j/k: move   Space: toggle   Enter: confirm   Esc: cancel"),
+        Label(lambda: f"Search: {query}" if query else "Type to search. Backspace clears the search."),
+        choices,
+    ]), focused_element=choices)
+    style = Style.from_dict({"checkbox-selected": "reverse"})
+    return Application(layout=layout, key_bindings=keys, style=style, erase_when_done=True).run()
 
 
 def build_command(args, groups, command):
@@ -445,6 +526,12 @@ def build_command(args, groups, command):
 
 def main(argv):
     args, groups, command = parse_args(argv)
+    if not args.no_picker and sys.stdin.isatty() and sys.stdout.isatty():
+        names = [name for name in groups if name != DEFAULT_GROUP]
+        if names:
+            args.groups = pick_groups(names, args.groups, DEFAULT_GROUP in groups)
+            if args.groups is None:
+                sys.exit(130)
     cmd, secrets = build_command(args, groups, command)
 
     if args.debug:
