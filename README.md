@@ -38,8 +38,9 @@ sb --no-network-filter                   # ignore configured allowlists for this
 sb --help                                # list the groups
 ```
 
-In a terminal, `sb` opens the group picker. Flags such as `--java` check those
-groups in advance. The `[default]` group always applies if it exists.
+In a terminal, `sb` opens the picker if there are optional groups. Flags such as
+`--java` check those groups in advance. The picker hides `[default]` and every
+group it includes, even through other groups. These groups always apply.
 
 - Use the arrow keys or `j` and `k` to move.
 - Type other characters to filter by letters in order. For example, `pythn` matches
@@ -48,8 +49,17 @@ groups in advance. The `[default]` group always applies if it exists.
 - Press Backspace to clear the entire search. Checked groups stay checked while you search.
 - Press Enter to confirm, or Esc to cancel.
 
+When you check a group, the picker also checks its included groups and marks them as `(included)`.
+Press Space on an included group to keep it checked on its own.
+
 If input or output is redirected, `sb` skips the picker and uses the group flags directly.
-Groups apply in the order you check them. Groups from flags start in flag order.
+Groups you check directly apply in selection order, with their includes first. Flags start in flag order.
+
+The picker lists the most-used groups first, even during a search. `sb` counts
+each group you select directly once per `msb` launch, including launches with
+`--no-picker`. Canceling or using `--debug` does not count.
+`sb` keeps separate counts for each configuration file in
+`$XDG_STATE_HOME/sb/state.sqlite3` (default: `~/.local/state/sb/state.sqlite3`).
 
 Paths are mounted at the same location as on the host. The sandbox starts in
 their deepest shared directory, using each file's parent directory. This does

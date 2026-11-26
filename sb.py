@@ -18,9 +18,13 @@ import os
 import random
 import re
 import shlex
+import shutil
+import sqlite3
 import subprocess
 import sys
 import tomllib
+from contextlib import closing
+from functools import partial
 from pathlib import Path
 
 DEFAULT_GROUP = "default"
@@ -35,6 +39,50 @@ BUILTIN_OPTIONS = {
 
 def fail(message):
     sys.exit(f"sb: {message}")
+
+
+def state_database_path():
+    home = Path(os.environ.get("XDG_STATE_HOME", ""))
+    if not home.is_absolute():
+        home = Path.home() / ".local/state"
+    return home / "sb" / "state.sqlite3"
+
+
+def load_group_usage(path, config):
+    try:
+        with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=0.5)) as db:
+            return dict(db.execute("SELECT name, launches FROM group_usage WHERE config = ?", (config,)))
+    except sqlite3.Error:
+        return {}
+
+
+def update_group_usage(path, config, names, *, undo=False):
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with closing(sqlite3.connect(path)) as db, db:
+            # Wait for other writers before creating the table or updating counts.
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS group_usage (
+                    config TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    launches INTEGER NOT NULL,
+                    PRIMARY KEY (config, name)
+                )
+            """)
+            if undo:
+                db.executemany("""
+                    UPDATE group_usage SET launches = launches - 1
+                    WHERE config = ? AND name = ? AND launches > 0
+                """, ((config, name) for name in names))
+            else:
+                db.executemany("""
+                    INSERT INTO group_usage (config, name, launches) VALUES (?, ?, 1)
+                    ON CONFLICT (config, name) DO UPDATE SET launches = launches + 1
+                """, ((config, name) for name in names))
+    except (OSError, sqlite3.Error):
+        return False  # Usage tracking is optional.
+    return True
 
 
 # Validators take (key, value) and return an error message, or None when valid.
@@ -120,17 +168,21 @@ def load_groups(path):
     return groups
 
 
-def resolve(groups, selected):
-    """Return group names in application order: includes before the group itself, each once."""
+def resolve(groups, selected, *, strict=True):
+    """Return groups in application order. A non-strict preview skips missing groups and cycles."""
     order, visiting = [], set()
 
     def visit(name):
         if name in order:
             return
         if name not in groups:
-            fail(f"unknown group: {name}")
+            if strict:
+                fail(f"unknown group: {name}")
+            return
         if name in visiting:
-            fail(f"include cycle through group: {name}")
+            if strict:
+                fail(f"include cycle through group: {name}")
+            return
         visiting.add(name)
         for included in groups[name].get("include", []):
             visit(included)
@@ -369,7 +421,7 @@ def parse_args(argv):
     return args, groups, command
 
 
-def pick_groups(names, preselected, has_default):
+def pick_groups(names, preselected, groups, usage=None):
     try:
         from prompt_toolkit.application import Application
         from prompt_toolkit.completion import CompleteEvent, FuzzyCompleter, WordCompleter
@@ -383,23 +435,42 @@ def pick_groups(names, preselected, has_default):
         fail("install prompt_toolkit to open the group picker, or use --no-picker")
 
     class GroupList(CheckboxList):
-        def show_matches(self, matches, keep_focus=False):
-            focused = self.values[self._selected_index][0] if keep_focus and self.values else None
-            self.values = matches
-            self._selected_index = next((i for i, (name, _) in enumerate(matches) if name == focused), 0)
+        def __init__(self, names):
+            self.labels = {name: partial(self.label_for, name) for name in names}
+            super().__init__(list(self.labels.items()), default_values=list(dict.fromkeys(preselected)),
+                             select_character="x")
+            self.explicit = self.current_values.copy()
+            self.current_values = resolve(groups, self.explicit, strict=False)
 
-        def toggle_focused(self):
-            if self.values:
-                super()._handle_enter()
+        def label_for(self, name):
+            label = name if name.isprintable() else repr(name)
+            if name in self.current_values and name not in self.explicit:
+                return f"{label} (included)"
+            return label
+
+        def show_matches(self, names, keep_focus=False):
+            focused = self.values[self._selected_index][0] if keep_focus and self.values else None
+            self.values = [(name, self.labels[name]) for name in names]
+            self._selected_index = names.index(focused) if focused in names else 0
+
+        def _handle_enter(self):
+            if not self.values:
+                return
+            name = self.values[self._selected_index][0]
+            if name in self.explicit:
+                self.explicit.remove(name)
+            else:
+                self.explicit.append(name)
+            self.current_values = resolve(groups, self.explicit, strict=False)
 
         def _get_text_fragments(self):
             if not self.values:
                 return [("", "No matching groups")]
             return super()._get_text_fragments()
 
-    labels = {name: name if name.isprintable() else repr(name) for name in names}
-    all_choices = list(labels.items())
-    choices = GroupList(all_choices, default_values=list(dict.fromkeys(preselected)), select_character="x")
+    usage = usage or {}
+    names = sorted(names, key=lambda name: usage.get(name, 0), reverse=True)
+    choices = GroupList(names)
     # Replace the widget's first-letter navigation with fuzzy search.
     choices.control.get_key_bindings().remove(Keys.Any)
     completer = FuzzyCompleter(WordCompleter(names, sentence=True), WORD=True)
@@ -411,29 +482,30 @@ def pick_groups(names, preselected, has_default):
         nonlocal query
         if event.data.isprintable():
             query += event.data
-            matches = completer.get_completions(Document(query), CompleteEvent())
-            choices.show_matches([(match.text, labels[match.text]) for match in matches])
+            matches = sorted(completer.get_completions(Document(query), CompleteEvent()),
+                             key=lambda match: usage.get(match.text, 0), reverse=True)
+            choices.show_matches([match.text for match in matches])
 
     @keys.add(" ", eager=True)
     @keys.add("backspace", eager=True)
     def toggle_or_clear(event):
         nonlocal query
         if event.data == " ":
-            choices.toggle_focused()
+            choices._handle_enter()
         if query:
             query = ""
-            choices.show_matches(all_choices, keep_focus=True)
+            choices.show_matches(names, keep_focus=True)
 
     @keys.add("enter", eager=True)
     def confirm(event):
-        event.app.exit(result=choices.current_values)
+        event.app.exit(result=choices.explicit)
 
     @keys.add("escape")
     @keys.add("c-c")
     def cancel(event):
         event.app.exit()
 
-    title = "Select groups ([default] always applies)" if has_default else "Select groups"
+    title = "Select groups ([default] always applies)" if DEFAULT_GROUP in groups else "Select groups"
     layout = Layout(HSplit([
         Label(title),
         Label("↑/↓ or j/k: move   Space: toggle   Enter: confirm   Esc: cancel"),
@@ -526,10 +598,15 @@ def build_command(args, groups, command):
 
 def main(argv):
     args, groups, command = parse_args(argv)
+    state_path = state_database_path()
+    config = Path(os.path.realpath(args.config)).as_uri()
     if not args.no_picker and sys.stdin.isatty() and sys.stdout.isatty():
-        names = [name for name in groups if name != DEFAULT_GROUP]
+        always_applied = set(resolve(groups, []))
+        names = [name for name in groups if name not in always_applied]
         if names:
-            args.groups = pick_groups(names, args.groups, DEFAULT_GROUP in groups)
+            preselected = [name for name in args.groups if name not in always_applied]
+            usage = load_group_usage(state_path, config)
+            args.groups = pick_groups(names, preselected, groups, usage)
             if args.groups is None:
                 sys.exit(130)
     cmd, secrets = build_command(args, groups, command)
@@ -545,10 +622,19 @@ def main(argv):
         return
 
     env = os.environ | {name: secret_value(name, spec) for name, spec in secrets.items()}
+    selected = set(args.groups)
+    recorded = False
+    if selected and shutil.which("msb", path=env.get("PATH", os.defpath)):
+        recorded = update_group_usage(state_path, config, selected)
     try:
         os.execvpe("msb", cmd, env)
-    except FileNotFoundError:
-        fail("msb not found on PATH")
+    except BaseException as error:
+        # A successful exec replaces this process. Undo the count if the handoff fails.
+        if recorded:
+            update_group_usage(state_path, config, selected, undo=True)
+        if isinstance(error, FileNotFoundError):
+            fail("msb not found on PATH")
+        raise
 
 
 if __name__ == "__main__":
