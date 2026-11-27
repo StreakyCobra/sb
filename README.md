@@ -43,7 +43,11 @@ Type to replace the name, or press Enter to keep it and move to the groups.
 Press Tab to switch between the name and the groups. If there are no optional
 groups, press Enter to launch from the name field.
 
-Flags such as `--java` preselect groups.
+The picker selects the groups from the last launch of the same project. Flags
+such as `--java` also select groups. If the current folder is the only project
+path, the picker can use the name before the first `--` as a fallback. For
+example, `swan-lake-infra--implement-probes` starts with the groups for
+`swan-lake-infra` until it has its own saved selection.
 
 The picker hides `[default]` and every group it includes, even through other
 groups. These groups always apply.
@@ -60,13 +64,14 @@ Press Space on an included group to keep it checked on its own.
 
 With `--no-picker` or redirected input or output, `sb` uses the default project
 name and the group flags. Groups you select directly apply in selection order,
-with their includes first. Flags start in flag order.
+with their includes first. Flagged groups apply last, in flag order.
 
 The picker lists the most-used groups first, even during a search. `sb` counts
-each group you select directly once per `msb` launch, including launches with
-`--no-picker`. Canceling or using `--debug` does not count.
-`sb` keeps separate counts for each configuration file in
-`$XDG_STATE_HOME/sb/state.sqlite3` (default: `~/.local/state/sb/state.sqlite3`).
+each group you select directly once per `msb` launch. It also saves that
+selection, even if it is empty. Launches with `--no-picker` count. Canceling
+or using `--debug` leaves the saved state unchanged. Each configuration file
+has its own state in `$XDG_STATE_HOME/sb/state.sqlite3` (default:
+`~/.local/state/sb/state.sqlite3`).
 
 `SB_PROJECT` is the name from the startup picker. When the current folder is
 the only project path, the default name is that folder's name. Other `PATH`

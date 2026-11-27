@@ -47,4 +47,4 @@ class WorkdirTests(unittest.TestCase):
         cwd = Path.cwd().resolve()
         for paths in ([], ["."], [".", str(cwd)]):
             with self.subTest(paths=paths):
-                self.assertEqual(sb.project_mounts(paths, False), ([str(cwd)], cwd.name))
+                self.assertEqual(sb.project_mounts(paths, False), ([str(cwd)], cwd.name, True))

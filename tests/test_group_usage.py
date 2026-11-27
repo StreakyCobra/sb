@@ -1,6 +1,7 @@
 import contextlib
 import io
 import os
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -23,6 +24,15 @@ class GroupUsageTests(unittest.TestCase):
     def usage(self, config=None):
         return sb.load_group_usage(self.state, (config or self.config).as_uri())
 
+    def saved_groups(self, project="workspace", config=None):
+        return sb.load_project_groups(self.state, (config or self.config).as_uri(), project)
+
+    def open_picker(self, simulate_picker, *argv):
+        with (patch.object(sb.sys.stdin, "isatty", return_value=True),
+              patch.object(sb.sys.stdout, "isatty", return_value=True),
+              patch.object(sb, "pick_startup", side_effect=simulate_picker)):
+            sb.main(["--config", str(self.config), *argv])
+
     def test_state_defaults_to_local_state(self):
         for value in ("", "relative"):
             with self.subTest(value=value), patch.dict(os.environ, {"XDG_STATE_HOME": value}):
@@ -31,16 +41,23 @@ class GroupUsageTests(unittest.TestCase):
                     Path.home() / ".local/state/sb/state.sqlite3",
                 )
 
-    def test_picker_uses_saved_counts(self):
-        config = self.config.as_uri()
-        self.assertTrue(sb.update_group_usage(self.state, config, ["python"]))
-        argv = ["--config", str(self.config), "-s"]
-        with (patch.object(sb.sys.stdin, "isatty", return_value=True),
-              patch.object(sb.sys.stdout, "isatty", return_value=True),
-              patch.object(sb, "pick_startup", return_value=("workspace", ["python"])) as picker):
-            sb.main(argv)
-        self.assertEqual(picker.call_args.args[-1], {"python": 1})
+    def test_picker_uses_counts_from_existing_database(self):
+        self.state.parent.mkdir(parents=True)
+        with contextlib.closing(sqlite3.connect(self.state)) as db, db:
+            db.execute("""
+                CREATE TABLE group_usage (config TEXT NOT NULL, name TEXT NOT NULL,
+                                          launches INTEGER NOT NULL, PRIMARY KEY (config, name))
+            """)
+            db.execute("INSERT INTO group_usage VALUES (?, 'python', 1)", (self.config.as_uri(),))
+
+        def pick(project, names, preselect, groups, usage):
+            self.assertEqual(usage, {"python": 1})
+            self.assertEqual(preselect(project), [])
+            return project, ["python"]
+
+        self.open_picker(pick, "-s")
         self.assertEqual(self.usage(), {"python": 2})
+        self.assertEqual(self.saved_groups(), ["python"])
 
     def test_launch_counts_only_explicit_groups_and_keeps_configurations_separate(self):
         sb.main(["--config", str(self.config), "-s", "--no-picker", "--python", "--python"])
@@ -50,6 +67,59 @@ class GroupUsageTests(unittest.TestCase):
         sb.main(["--config", str(other), "-s", "--no-picker", "--java"])
         self.assertEqual(self.usage(), {"python": 2, "java": 1})
         self.assertEqual(self.usage(other), {"java": 1})
+        self.assertEqual(self.saved_groups(), ["java", "python"])
+        self.assertEqual(self.saved_groups(config=other), ["java"])
+
+    def test_picker_reads_and_saves_groups_for_the_custom_name(self):
+        self.config.write_text('[default]\nimage = "test"\nenv = { DB = "$${SB_PROJECT}.db" }\n[java]\n[python]\n')
+
+        def rename(project, names, preselect, groups, usage):
+            return "my-project", ["python"]
+
+        self.open_picker(rename, "-s")
+        self.assertEqual(self.saved_groups("my-project"), ["python"])
+        self.assertEqual(self.saved_groups(), [])
+        _, command, env = self.execute.call_args.args
+        self.assertIn("DB=my-project.db", command)
+        self.assertEqual(env["SB_PROJECT"], "my-project")
+
+        def reopen(project, names, preselect, groups, usage):
+            self.assertEqual(preselect(project), ["java"])
+            self.assertEqual(preselect("my-project"), ["python", "java"])
+            return "my-project", ["python", "java"]
+
+        self.open_picker(reopen, "-s", "--java")
+        self.assertEqual(self.saved_groups("my-project"), ["python", "java"])
+
+    def test_current_folder_inherits_until_it_has_its_own_selection(self):
+        root = self.config.parent
+        base = root / "swan-lake-infra"
+        child = root / "swan-lake-infra--implement-probes--next"
+        base.mkdir()
+        child.mkdir()
+        argv = ["--config", str(self.config), "--no-picker"]
+        with patch.object(Path, "cwd", return_value=base):
+            sb.main([*argv, "--python", "--java"])
+
+        def first_open(project, names, preselect, groups, usage):
+            self.assertEqual(project, child.name)
+            self.assertEqual(preselect(project), ["python", "java"])
+            return project, []
+
+        def second_open(project, names, preselect, groups, usage):
+            self.assertEqual(preselect(project), [])
+            return project, []
+
+        with patch.object(Path, "cwd", return_value=child):
+            self.open_picker(first_open)
+            self.open_picker(second_open)
+        self.assertEqual(self.saved_groups(base.name), ["python", "java"])
+
+        def open_explicit_paths(project, names, preselect, groups, usage):
+            self.assertEqual(preselect(f"{base.name}--other"), [])
+            return project, []
+
+        self.open_picker(open_explicit_paths, str(root))
 
     def test_debug_and_cancel_do_not_create_usage(self):
         argv = ["--config", str(self.config), "-s", "--java"]
@@ -78,6 +148,16 @@ class GroupUsageTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             sb.main(argv)
         self.assertEqual(self.usage(), {"python": 1})
+        self.assertEqual(self.saved_groups(), ["python"])
+
+    def test_failed_exec_does_not_replace_another_launch(self):
+        config = self.config.as_uri()
+        earlier = sb.update_launch_state(self.state, config, "workspace", ["java"])
+        later = sb.update_launch_state(self.state, config, "workspace", ["python"])
+        sb.update_launch_state(self.state, config, "workspace", ["java"], undo=earlier)
+        self.assertEqual(self.saved_groups(), ["python"])
+        sb.update_launch_state(self.state, config, "workspace", ["python"], undo=later)
+        self.assertEqual(self.saved_groups(), [])
 
     def test_unusable_state_does_not_prevent_launch(self):
         self.state.parent.mkdir(parents=True)

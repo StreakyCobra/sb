@@ -15,6 +15,7 @@ See example.toml for the file format.
 
 import argparse
 import hashlib
+import json
 import os
 import random
 import re
@@ -57,7 +58,24 @@ def load_group_usage(path, config):
         return {}
 
 
-def update_group_usage(path, config, names, *, undo=False):
+def load_project_groups(path, config, project, *, inherit=False):
+    base, separator, _ = project.partition("--")
+    candidates = (project, base) if inherit and separator and base else (project,)
+    try:
+        with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=0.5)) as db:
+            for name in candidates:
+                row = db.execute("""
+                    SELECT groups FROM project_launches WHERE config = ? AND project = ?
+                    ORDER BY id DESC LIMIT 1
+                """, (config, name)).fetchone()
+                if row is not None:
+                    return json.loads(row[0])
+    except (sqlite3.Error, ValueError):
+        pass
+    return []
+
+
+def update_launch_state(path, config, project, names, *, undo=None):
     try:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         with closing(sqlite3.connect(path)) as db, db:
@@ -71,7 +89,20 @@ def update_group_usage(path, config, names, *, undo=False):
                     PRIMARY KEY (config, name)
                 )
             """)
-            if undo:
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS project_launches (
+                    id INTEGER PRIMARY KEY,
+                    config TEXT NOT NULL,
+                    project TEXT NOT NULL,
+                    groups TEXT NOT NULL
+                )
+            """)
+            db.execute("""
+                CREATE INDEX IF NOT EXISTS project_launches_by_project
+                ON project_launches (config, project, id)
+            """)
+            if undo is not None:
+                db.execute("DELETE FROM project_launches WHERE id = ?", (undo,))
                 db.executemany("""
                     UPDATE group_usage SET launches = launches - 1
                     WHERE config = ? AND name = ? AND launches > 0
@@ -81,9 +112,12 @@ def update_group_usage(path, config, names, *, undo=False):
                     INSERT INTO group_usage (config, name, launches) VALUES (?, ?, 1)
                     ON CONFLICT (config, name) DO UPDATE SET launches = launches + 1
                 """, ((config, name) for name in names))
-    except (OSError, sqlite3.Error):
-        return False  # Usage tracking is optional.
-    return True
+                # Keep earlier launches so a failed exec can remove only its own selection.
+                return db.execute("""
+                    INSERT INTO project_launches (config, project, groups) VALUES (?, ?, ?)
+                """, (config, project, json.dumps(names))).lastrowid
+    except (OSError, sqlite3.Error, UnicodeError):
+        return None  # Launch history is optional.
 
 
 # Validators take (key, value) and return an error message, or None when valid.
@@ -437,7 +471,7 @@ def project_mounts(paths, skip_cwd):
         project = hashlib.sha256(paths_bytes).hexdigest()[:16]
     else:
         project = "workspace"
-    return mounts, project
+    return mounts, project, cwd_only
 
 
 def pick_startup(project, names, preselect, groups, usage):
@@ -667,14 +701,19 @@ def build_command(args, groups, command, paths, project):
 
 def main(argv):
     args, groups, command = parse_args(argv)
-    paths, project = project_mounts(args.paths, args.skip_cwd)
+    paths, project, cwd_only = project_mounts(args.paths, args.skip_cwd)
     state_path = state_database_path()
     config = Path(os.path.realpath(args.config)).as_uri()
     if not args.no_picker and sys.stdin.isatty() and sys.stdout.isatty():
         always_applied = set(resolve(groups, []))
         names = [name for name in groups if name not in always_applied]
-        usage = load_group_usage(state_path, config)
-        selection = pick_startup(project, names, lambda _: args.groups, groups, usage)
+        flags = dict.fromkeys(args.groups)
+
+        def preselect(name):
+            saved = load_project_groups(state_path, config, name, inherit=cwd_only)
+            return [group for group in saved if group not in flags] + list(flags)
+
+        selection = pick_startup(project, names, preselect, groups, load_group_usage(state_path, config))
         if selection is None:
             sys.exit(130)
         project, args.groups = selection
@@ -691,16 +730,16 @@ def main(argv):
         return
 
     env = os.environ | {name: secret_value(name, spec) for name, spec in secrets.items()}
-    selected = set(args.groups)
-    recorded = False
-    if selected and shutil.which("msb", path=env.get("PATH", os.defpath)):
-        recorded = update_group_usage(state_path, config, selected)
+    selected = list(dict.fromkeys(args.groups))
+    launch = None
+    if shutil.which("msb", path=env.get("PATH", os.defpath)):
+        launch = update_launch_state(state_path, config, project, selected)
     try:
         os.execvpe("msb", cmd, env)
     except BaseException as error:
-        # A successful exec replaces this process. Undo the count if the handoff fails.
-        if recorded:
-            update_group_usage(state_path, config, selected, undo=True)
+        # A successful exec replaces this process. Undo the record if the handoff fails.
+        if launch is not None:
+            update_launch_state(state_path, config, project, selected, undo=launch)
         if isinstance(error, FileNotFoundError):
             fail("msb not found on PATH")
         raise
