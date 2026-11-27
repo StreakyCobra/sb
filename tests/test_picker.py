@@ -82,6 +82,10 @@ class PickerTests(unittest.TestCase):
         self.assertEqual(self.startup("\t \t\t\r", lambda _: [], {"java": {}}),
                          ("current-project", ["java"]))
 
+    def test_renaming_keeps_group_changes_if_the_saved_groups_are_the_same(self):
+        self.assertEqual(self.startup("\t \tnew-project\r\r", lambda _: [], {"java": {}}),
+                         ("new-project", ["java"]))
+
     def test_paste_replaces_project_when_there_are_no_optional_groups(self):
         self.assertEqual(self.startup("\x1b[200~new-project\x1b[201~\r", None, {}),
                          ("new-project", []))

@@ -43,11 +43,12 @@ Type to replace the name, or press Enter to keep it and move to the groups.
 Press Tab to switch between the name and the groups. If there are no optional
 groups, press Enter to launch from the name field.
 
-The picker selects the groups from the last launch of the same project. Flags
-such as `--java` also select groups. If the current folder is the only project
-path, the picker can use the name before the first `--` as a fallback. For
-example, `swan-lake-infra--implement-probes` starts with the groups for
-`swan-lake-infra` until it has its own saved selection.
+The picker selects the groups from the last launch with the same project
+paths. Renaming a project keeps its groups. Flags such as `--java` also select
+groups. For new paths, the picker can use the latest selection with the same
+project name. If the current folder is the only project path, it also tries
+the name before the first `--`. For example, `swan-lake-infra--implement-probes`
+starts with the groups for `swan-lake-infra` until it has its own saved selection.
 
 The picker hides `[default]` and every group it includes, even through other
 groups. These groups always apply.
@@ -80,7 +81,7 @@ next time, even in a different order.
 If there is no saved name, the current folder's name is the default when it
 is the only project path. Other `PATH` arguments produce a short hash of their
 absolute paths. The order of the paths does not change the hash. With `-s` and
-no paths, the name is `workspace`.
+no paths, the default name is `workspace`.
 
 Paths are mounted at the same location as on the host. The sandbox starts in
 their deepest shared directory, using each file's parent directory. This does

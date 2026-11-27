@@ -14,6 +14,7 @@ See example.toml for the file format.
 """
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -24,8 +25,9 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import time
 import tomllib
-from contextlib import closing
+from contextlib import ExitStack, closing, contextmanager, nullcontext
 from functools import partial
 from pathlib import Path
 
@@ -58,15 +60,15 @@ def load_group_usage(path, config):
         return {}
 
 
-def load_project_groups(path, config, project, *, inherit=False):
+def load_project_defaults(path, config, project, *, inherit=False):
     base, separator, _ = project.partition("--")
     candidates = (project, base) if inherit and separator and base else (project,)
     try:
         with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=0.5)) as db:
             for name in candidates:
                 row = db.execute("""
-                    SELECT groups FROM project_launches WHERE config = ? AND project = ?
-                    ORDER BY id DESC LIMIT 1
+                    SELECT groups FROM project_config WHERE config = ? AND project = ?
+                    ORDER BY last_used DESC, mount_hash LIMIT 1
                 """, (config, name)).fetchone()
                 if row is not None:
                     return json.loads(row[0])
@@ -75,23 +77,37 @@ def load_project_groups(path, config, project, *, inherit=False):
     return []
 
 
-def load_project_name(path, config, mount_hash):
+def load_project_config(path, config, mount_hash):
     try:
         with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=0.5)) as db:
             row = db.execute("""
-                SELECT project FROM project_launches WHERE config = ? AND mount_hash = ?
-                ORDER BY id DESC LIMIT 1
+                SELECT project, custom_name, groups FROM project_config WHERE config = ? AND mount_hash = ?
             """, (config, mount_hash)).fetchone()
-            return row[0] if row is not None else None
-    except sqlite3.Error:
-        return None
+            if row is not None:
+                project, custom_name, groups = row
+                return (project if custom_name else None), json.loads(groups)
+    except (sqlite3.Error, ValueError):
+        pass
+    return None, None
 
 
-def update_launch_state(path, config, project, names, *, mount_hash=None, undo=None):
+@contextmanager
+def lock_launch_state(path):
+    """Serialize state updates and rollback until exec closes the non-inheritable lock."""
+    with ExitStack() as stack:
+        try:
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            lock = stack.enter_context(path.with_suffix(".lock").open("ab"))
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        except OSError:
+            yield False
+        else:
+            yield True
+
+
+def record_launch(path, config, mount_hash, project, names, *, renamed):
     try:
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         with closing(sqlite3.connect(path)) as db, db:
-            # Wait for other writers before creating the table or updating counts.
             db.execute("BEGIN IMMEDIATE")
             db.execute("""
                 CREATE TABLE IF NOT EXISTS group_usage (
@@ -102,44 +118,62 @@ def update_launch_state(path, config, project, names, *, mount_hash=None, undo=N
                 )
             """)
             db.execute("""
-                CREATE TABLE IF NOT EXISTS project_launches (
-                    id INTEGER PRIMARY KEY,
+                CREATE TABLE IF NOT EXISTS project_config (
                     config TEXT NOT NULL,
+                    mount_hash TEXT NOT NULL,
                     project TEXT NOT NULL,
+                    custom_name INTEGER NOT NULL,
                     groups TEXT NOT NULL,
-                    mount_hash TEXT
+                    last_used INTEGER NOT NULL,
+                    PRIMARY KEY (config, mount_hash)
                 )
             """)
-            columns = {column[1] for column in db.execute("PRAGMA table_info(project_launches)")}
-            if "mount_hash" not in columns:
-                # Older launches still have group selections but no mount information.
-                db.execute("ALTER TABLE project_launches ADD COLUMN mount_hash TEXT")
             db.execute("""
-                CREATE INDEX IF NOT EXISTS project_launches_by_project
-                ON project_launches (config, project, id)
+                CREATE INDEX IF NOT EXISTS project_config_by_name
+                ON project_config (config, project, last_used DESC, mount_hash)
             """)
+            previous = db.execute("""
+                SELECT project, custom_name, groups, last_used
+                FROM project_config WHERE config = ? AND mount_hash = ?
+            """, (config, mount_hash)).fetchone()
+            # A launch that accepted the prefilled name must not undo a concurrent rename.
+            if not renamed and previous is not None and previous[1]:
+                project, renamed = previous[:2]
             db.execute("""
-                CREATE INDEX IF NOT EXISTS project_launches_by_mounts
-                ON project_launches (config, mount_hash, id) WHERE mount_hash IS NOT NULL
-            """)
-            if undo is not None:
-                db.execute("DELETE FROM project_launches WHERE id = ?", (undo,))
-                db.executemany("""
-                    UPDATE group_usage SET launches = launches - 1
-                    WHERE config = ? AND name = ? AND launches > 0
-                """, ((config, name) for name in names))
-            else:
-                db.executemany("""
-                    INSERT INTO group_usage (config, name, launches) VALUES (?, ?, 1)
-                    ON CONFLICT (config, name) DO UPDATE SET launches = launches + 1
-                """, ((config, name) for name in names))
-                # Keep earlier launches so a failed exec can remove only its own selection.
-                return db.execute("""
-                    INSERT INTO project_launches (config, project, groups, mount_hash)
-                    VALUES (?, ?, ?, ?)
-                """, (config, project, json.dumps(names), mount_hash)).lastrowid
+                INSERT INTO project_config (config, mount_hash, project, custom_name, groups, last_used)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (config, mount_hash) DO UPDATE SET
+                    project = excluded.project, custom_name = excluded.custom_name,
+                    groups = excluded.groups, last_used = excluded.last_used
+            """, (config, mount_hash, project, renamed, json.dumps(names), time.time_ns()))
+            db.executemany("""
+                INSERT INTO group_usage (config, name, launches) VALUES (?, ?, 1)
+                ON CONFLICT (config, name) DO UPDATE SET launches = launches + 1
+            """, ((config, name) for name in names))
+            return previous or ()  # An empty tuple means this was the first launch.
     except (OSError, sqlite3.Error, UnicodeError):
-        return None  # Launch history is optional.
+        return None  # State tracking is optional.
+
+
+def undo_launch(path, config, mount_hash, names, previous):
+    try:
+        with closing(sqlite3.connect(path)) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            if previous:
+                db.execute("""
+                    UPDATE project_config SET project = ?, custom_name = ?, groups = ?, last_used = ?
+                    WHERE config = ? AND mount_hash = ?
+                """, (*previous, config, mount_hash))
+            else:
+                db.execute("DELETE FROM project_config WHERE config = ? AND mount_hash = ?", (config, mount_hash))
+            db.executemany("""
+                UPDATE group_usage SET launches = launches - 1 WHERE config = ? AND name = ?
+            """, ((config, name) for name in names))
+            db.executemany("""
+                DELETE FROM group_usage WHERE config = ? AND name = ? AND launches = 0
+            """, ((config, name) for name in names))
+    except (OSError, sqlite3.Error, UnicodeError):
+        pass
 
 
 # Validators take (key, value) and return an error message, or None when valid.
@@ -500,11 +534,11 @@ def project_mounts(paths, skip_cwd):
     if not mounts and not skip_cwd:
         mounts = [cwd]
     paths_bytes = b"\0".join(sorted(map(os.fsencode, mounts)))
-    mount_hash = hashlib.sha256(paths_bytes).hexdigest() if mounts else None
+    mount_hash = hashlib.sha256(paths_bytes).hexdigest()
     cwd_only = mounts == [cwd]
     if cwd_only:
         project = os.path.basename(cwd) or "workspace"
-    elif mount_hash is not None:
+    elif mounts:
         project = mount_hash[:16]
     else:
         project = "workspace"
@@ -566,8 +600,9 @@ def pick_startup(project, names, preselect, groups, usage):
 
     names = sorted(names, key=lambda name: usage.get(name, 0), reverse=True)
     choices = GroupList(names) if names else None
+    initial_groups = preselect(project) if choices is not None else []
     if choices is not None:
-        choices.preselect(preselect(project))
+        choices.preselect(initial_groups)
     completer = FuzzyCompleter(WordCompleter(names, sentence=True), WORD=True)
     query = ""
     default_project = project
@@ -596,7 +631,7 @@ def pick_startup(project, names, preselect, groups, usage):
     @keys.add("tab", filter=project_focused if choices else False)
     @keys.add("s-tab", filter=project_focused if choices else False)
     def confirm_project(event):
-        nonlocal project, query
+        nonlocal project, query, initial_groups
         name = project_field.text if project_field.text.strip() else default_project
         if name != project_field.text:
             project_field.buffer.document = Document(name, len(name))
@@ -606,8 +641,11 @@ def pick_startup(project, names, preselect, groups, usage):
             return
         if name != project:
             project = name
-            query = ""
-            choices.preselect(preselect(project))
+            selected = preselect(project)
+            if selected != initial_groups:
+                initial_groups = selected
+                query = ""
+                choices.preselect(selected)
         event.app.layout.focus(choices)
 
     @keys.add("tab", filter=group_focused)
@@ -747,8 +785,8 @@ def main(argv):
     paths, project, cwd_only, mount_hash = project_mounts(args.paths, args.skip_cwd)
     state_path = state_database_path()
     config = Path(os.path.realpath(args.config)).as_uri()
-    if mount_hash is not None:
-        project = load_project_name(state_path, config, mount_hash) or project
+    saved_name, saved_groups = load_project_config(state_path, config, mount_hash)
+    project = saved_name or project
     prefilled_project = project
     if not args.no_picker and sys.stdin.isatty() and sys.stdout.isatty():
         always_applied = set(resolve(groups, []))
@@ -756,7 +794,9 @@ def main(argv):
         flags = dict.fromkeys(args.groups)
 
         def preselect(name):
-            saved = load_project_groups(state_path, config, name, inherit=cwd_only)
+            saved = saved_groups
+            if saved is None:
+                saved = load_project_defaults(state_path, config, name, inherit=cwd_only)
             return [group for group in saved if group not in flags] + list(flags)
 
         selection = pick_startup(project, names, preselect, groups, load_group_usage(state_path, config))
@@ -777,20 +817,21 @@ def main(argv):
 
     env = os.environ | {name: secret_value(name, spec) for name, spec in secrets.items()}
     selected = list(dict.fromkeys(args.groups))
-    launch = None
-    if shutil.which("msb", path=env.get("PATH", os.defpath)):
-        # Only an explicit rename changes the saved name for these mounts.
-        launch = update_launch_state(state_path, config, project, selected,
-                                     mount_hash=mount_hash if project != prefilled_project else None)
-    try:
-        os.execvpe("msb", cmd, env)
-    except BaseException as error:
-        # A successful exec replaces this process. Undo the record if the handoff fails.
-        if launch is not None:
-            update_launch_state(state_path, config, project, selected, undo=launch)
-        if isinstance(error, FileNotFoundError):
-            fail("msb not found on PATH")
-        raise
+    found_msb = shutil.which("msb", path=env.get("PATH", os.defpath))
+    lock = lock_launch_state(state_path) if found_msb else nullcontext(False)
+    with lock as locked:
+        previous = None
+        if locked:
+            previous = record_launch(state_path, config, mount_hash, project, selected,
+                                     renamed=project != prefilled_project)
+        try:
+            os.execvpe("msb", cmd, env)
+        except BaseException as error:
+            if previous is not None:
+                undo_launch(state_path, config, mount_hash, selected, previous)
+            if isinstance(error, FileNotFoundError):
+                fail("msb not found on PATH")
+            raise
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 import contextlib
+import fcntl
 import io
 import os
 import sqlite3
@@ -24,8 +25,10 @@ class GroupUsageTests(unittest.TestCase):
     def usage(self, config=None):
         return sb.load_group_usage(self.state, (config or self.config).as_uri())
 
-    def saved_groups(self, project="workspace", config=None):
-        return sb.load_project_groups(self.state, (config or self.config).as_uri(), project)
+    def saved_groups(self, paths=(), config=None):
+        _, _, _, mount_hash = sb.project_mounts(paths, True)
+        _, groups = sb.load_project_config(self.state, (config or self.config).as_uri(), mount_hash)
+        return groups
 
     def open_picker(self, simulate_picker, *argv):
         with (patch.object(sb.sys.stdin, "isatty", return_value=True),
@@ -41,30 +44,6 @@ class GroupUsageTests(unittest.TestCase):
                     Path.home() / ".local/state/sb/state.sqlite3",
                 )
 
-    def test_picker_uses_counts_and_selections_from_existing_database(self):
-        self.state.parent.mkdir(parents=True)
-        with contextlib.closing(sqlite3.connect(self.state)) as db, db:
-            db.execute("""
-                CREATE TABLE group_usage (config TEXT NOT NULL, name TEXT NOT NULL,
-                                          launches INTEGER NOT NULL, PRIMARY KEY (config, name))
-            """)
-            db.execute("INSERT INTO group_usage VALUES (?, 'python', 1)", (self.config.as_uri(),))
-            db.execute("""
-                CREATE TABLE project_launches (id INTEGER PRIMARY KEY, config TEXT NOT NULL,
-                                               project TEXT NOT NULL, groups TEXT NOT NULL)
-            """)
-            db.execute("INSERT INTO project_launches VALUES (1, ?, 'workspace', ?)",
-                       (self.config.as_uri(), '["java"]'))
-
-        def pick(project, names, preselect, groups, usage):
-            self.assertEqual(usage, {"python": 1})
-            self.assertEqual(preselect(project), ["java"])
-            return project, ["python"]
-
-        self.open_picker(pick, "-s")
-        self.assertEqual(self.usage(), {"python": 2})
-        self.assertEqual(self.saved_groups(), ["python"])
-
     def test_launch_counts_only_explicit_groups_and_keeps_configurations_separate(self):
         sb.main(["--config", str(self.config), "-s", "--no-picker", "--python", "--python"])
         sb.main(["--config", str(self.config), "-s", "--no-picker", "--java", "--python"])
@@ -76,26 +55,28 @@ class GroupUsageTests(unittest.TestCase):
         self.assertEqual(self.saved_groups(), ["java", "python"])
         self.assertEqual(self.saved_groups(config=other), ["java"])
 
-    def test_picker_reads_and_saves_groups_for_the_custom_name(self):
+    def test_renaming_keeps_the_groups_and_updates_the_same_row(self):
         self.config.write_text('[default]\nimage = "test"\nenv = { DB = "$${SB_PROJECT}.db" }\n[java]\n[python]\n')
 
         def rename(project, names, preselect, groups, usage):
             return "my-project", ["python"]
 
         self.open_picker(rename, "-s")
-        self.assertEqual(self.saved_groups("my-project"), ["python"])
-        self.assertEqual(self.saved_groups(), [])
+        self.assertEqual(self.saved_groups(), ["python"])
         _, command, env = self.execute.call_args.args
         self.assertIn("DB=my-project.db", command)
         self.assertEqual(env["SB_PROJECT"], "my-project")
 
         def reopen(project, names, preselect, groups, usage):
-            self.assertEqual(preselect(project), ["java"])
-            self.assertEqual(preselect("my-project"), ["python", "java"])
-            return "my-project", ["python", "java"]
+            self.assertEqual(project, "my-project")
+            self.assertEqual(preselect(project), ["python", "java"])
+            self.assertEqual(preselect("renamed"), ["python", "java"])
+            return "renamed", preselect("renamed")
 
         self.open_picker(reopen, "-s", "--java")
-        self.assertEqual(self.saved_groups("my-project"), ["python", "java"])
+        self.assertEqual(self.saved_groups(), ["python", "java"])
+        with contextlib.closing(sqlite3.connect(self.state)) as db:
+            self.assertEqual(db.execute("SELECT project FROM project_config").fetchall(), [("renamed",)])
 
     def test_picker_remembers_the_name_for_the_same_paths_in_any_order(self):
         first, second = (self.config.parent / name for name in ("folderA", "folderB"))
@@ -117,8 +98,35 @@ class GroupUsageTests(unittest.TestCase):
         argv = ["--config", str(self.config), "--no-picker"]
         sb.main([*argv, str(second), str(first)])
         self.assertEqual(self.execute.call_args.args[2]["SB_PROJECT"], "paired")
+        self.assertEqual(self.saved_groups([first, second]), [])
+        with contextlib.closing(sqlite3.connect(self.state)) as db:
+            self.assertEqual(db.execute("SELECT project FROM project_config").fetchall(), [("paired",)])
         sb.main([*argv, str(first)])
         self.assertRegex(self.execute.call_args.args[2]["SB_PROJECT"], r"^[a-f0-9]{16}$")
+
+    def test_mount_sets_with_the_same_name_keep_their_own_groups(self):
+        first, second, third = (self.config.parent / name for name in ("first", "second", "third"))
+        for directory in (first, second, third):
+            directory.mkdir()
+        self.open_picker(lambda *_: ("shared", ["java"]), str(first))
+
+        def use_shared_name(project, names, preselect, groups, usage):
+            self.assertEqual(preselect("shared"), ["java"])
+            return "shared", ["python"]
+
+        self.open_picker(use_shared_name, str(second))
+
+        def reopen_first(project, names, preselect, groups, usage):
+            self.assertEqual(project, "shared")
+            self.assertEqual(preselect(project), ["java"])
+            return project, ["java"]
+
+        def open_third(project, names, preselect, groups, usage):
+            self.assertEqual(preselect("shared"), ["python"])
+            return project, []
+
+        self.open_picker(open_third, str(third))
+        self.open_picker(reopen_first, str(first))
 
     def test_current_folder_inherits_until_it_has_its_own_selection(self):
         root = self.config.parent
@@ -142,7 +150,12 @@ class GroupUsageTests(unittest.TestCase):
         with patch.object(Path, "cwd", return_value=child):
             self.open_picker(first_open)
             self.open_picker(second_open)
-        self.assertEqual(self.saved_groups(base.name), ["python", "java"])
+            _, _, _, mount_hash = sb.project_mounts([], False)
+        self.assertEqual(self.saved_groups([base]), ["python", "java"])
+        with contextlib.closing(sqlite3.connect(self.state)) as db:
+            self.assertEqual(db.execute("""
+                SELECT project, custom_name FROM project_config WHERE config = ? AND mount_hash = ?
+            """, (self.config.as_uri(), mount_hash)).fetchall(), [(child.name, 0)])
 
         def open_explicit_paths(project, names, preselect, groups, usage):
             self.assertEqual(preselect(f"{base.name}--other"), [])
@@ -171,25 +184,34 @@ class GroupUsageTests(unittest.TestCase):
         self.assertFalse(self.state.exists())
 
     def test_failed_exec_leaves_previous_usage_intact(self):
-        argv = ["--config", str(self.config), "-s", "--no-picker", "--python"]
-        sb.main(argv)
+        argv = ["--config", str(self.config), "-s", "--no-picker"]
+        sb.main([*argv, "--python"])
         self.execute.side_effect = PermissionError
         with self.assertRaises(PermissionError):
-            sb.main(argv)
+            sb.main([*argv, "--java"])
         self.assertEqual(self.usage(), {"python": 1})
         self.assertEqual(self.saved_groups(), ["python"])
 
-    def test_failed_exec_does_not_replace_another_launch(self):
-        config = self.config.as_uri()
-        mount_hash = "same-mounts"
-        earlier = sb.update_launch_state(self.state, config, "workspace", ["java"], mount_hash=mount_hash)
-        later = sb.update_launch_state(self.state, config, "workspace", ["python"], mount_hash=mount_hash)
-        sb.update_launch_state(self.state, config, "workspace", ["java"], undo=earlier)
-        self.assertEqual(self.saved_groups(), ["python"])
-        self.assertEqual(sb.load_project_name(self.state, config, mount_hash), "workspace")
-        sb.update_launch_state(self.state, config, "workspace", ["python"], undo=later)
-        self.assertEqual(self.saved_groups(), [])
-        self.assertIsNone(sb.load_project_name(self.state, config, mount_hash))
+    def test_failed_rename_restores_the_saved_name_before_releasing_the_lock(self):
+        paths = [str(self.config.parent)]
+        _, _, _, mount_hash = sb.project_mounts(paths, False)
+        self.open_picker(lambda *_: ("original", ["python"]), *paths)
+
+        def fail_exec(*_):
+            with self.state.with_suffix(".lock").open("ab") as competing_lock:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(competing_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            raise PermissionError
+
+        self.execute.side_effect = fail_exec
+        with self.assertRaises(PermissionError):
+            self.open_picker(lambda *_: ("failed-rename", ["java"]), *paths)
+        self.assertEqual(sb.load_project_config(self.state, self.config.as_uri(), mount_hash),
+                         ("original", ["python"]))
+        with contextlib.closing(sqlite3.connect(self.state)) as db:
+            self.assertEqual(db.execute("SELECT project FROM project_config").fetchall(), [("original",)])
+        with self.state.with_suffix(".lock").open("ab") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     def test_unusable_state_does_not_prevent_launch(self):
         self.state.parent.mkdir(parents=True)
