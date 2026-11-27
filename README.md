@@ -91,6 +91,17 @@ paths. Secrets are read from `pass` (or the environment) and injected by msb on
 the way out: the sandbox only sees placeholders. See `example.toml` for the group
 syntax.
 
+`sb` asks before it creates a missing mount source. To skip confirmation
+for a directory and its subdirectories, add `auto_create_mount_dirs` to
+`[default]` or to a group such as `[opencode]`:
+
+```toml
+auto_create_mount_dirs = ["~/.local/share/sb/opencode"]
+```
+
+The list applies to host paths. Paths outside the listed directories still
+require confirmation. `--debug` reports missing sources without creating them.
+
 Configured commands can be strings, evaluated by `sh -c` inside the sandbox:
 
 ```toml

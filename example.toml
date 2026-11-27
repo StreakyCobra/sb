@@ -40,6 +40,7 @@ CLAUDE_CODE_OAUTH_TOKEN = { cmd = "pass show keys/anthropic-claude-oauth-token",
 command = ["opencode"]
 allowlist = ["chatgpt.com:443"]
 env = { OPENCODE_DB = "$${SB_PROJECT}.db", OPENCODE_DISABLE_AUTOUPDATE = "1" }
+auto_create_mount_dirs = ["~/.local/share/sb/opencode"]
 mounts = [
   "~/.local/share/sb/opencode:$${HOME}/.local/share/opencode",
   "~/.config/opencode:$${HOME}/.config/opencode:ro",

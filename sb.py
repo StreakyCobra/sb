@@ -162,6 +162,12 @@ def check_allowlist(key, value):
         allowlist_rule(entry)  # Fails with its own message.
 
 
+def check_mount_dirs(key, value):
+    if not (isinstance(value, list) and
+            all(isinstance(path, str) and path.strip() and "\x00" not in path for path in value)):
+        return f"'{key}' must be a list of non-empty directory paths"
+
+
 def check_random_ports(key, value):
     if not isinstance(value, list):
         return f"'{key}' must be a list of environment variable names"
@@ -187,6 +193,7 @@ LIST, TABLE, VALUE = "list", "table", "value"
 KEYS = {
     "include": (LIST, None),
     "mounts": (LIST, None),
+    "auto_create_mount_dirs": (LIST, check_mount_dirs),
     "volumes": (LIST, None),
     "ports": (LIST, None),
     "host_ports": (LIST, None),
@@ -287,16 +294,23 @@ def create_directory(path):
     os.makedirs(path)
 
 
-def mount_flags(spec, debug):
+def mount_flags(spec, debug, auto_create_dirs=()):
     """'SRC[:DST[:OPTIONS]]' -> msb flags; DST defaults to SRC."""
     source, _, rest = expand(spec).partition(":")
     target, _, options = rest.partition(":")
-    mapping = ":".join(part for part in (source, target or source, options) if part)
+    target = target or source
     if not os.path.exists(source):
+        resolved = Path(os.path.realpath(source))
         if debug:
             print(f"# warning: mount source does not exist: {source}", file=sys.stderr)
+        elif source and any(resolved.is_relative_to(directory) for directory in auto_create_dirs):
+            resolved.mkdir(parents=True, exist_ok=True)
+            if not os.path.exists(source):
+                # An intermediate component removed by `..` may still be missing.
+                source = str(resolved)
         else:
             create_directory(source)
+    mapping = ":".join(part for part in (source, target, options) if part)
     return ["--mount-file" if os.path.isfile(source) else "-v", mapping]
 
 
@@ -695,8 +709,14 @@ def build_command(args, groups, command, paths, project):
     if settings.get("git_metadata") and not args.skip_cwd:
         mounts += [common for path in paths if os.path.isdir(path)
                    if (common := git_common_dir(path)) and common not in mounts]
+    auto_create_dirs = []
+    for entry in settings["auto_create_mount_dirs"]:
+        directory = expand(entry)
+        if not directory.strip():
+            fail("auto_create_mount_dirs entries must expand to non-empty directory paths")
+        auto_create_dirs.append(Path(os.path.realpath(directory)))
     for spec in mounts + settings["mounts"]:
-        flags += mount_flags(spec, args.debug)
+        flags += mount_flags(spec, args.debug, auto_create_dirs)
     for spec in settings["volumes"]:
         flags += ["--mount-named", expand(spec)]
     for key, value in settings["env"].items():
