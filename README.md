@@ -62,9 +62,9 @@ groups. These groups always apply.
 When you check a group, the picker also checks its included groups and marks them as `(included)`.
 Press Space on an included group to keep it checked on its own.
 
-With `--no-picker` or redirected input or output, `sb` uses the default project
-name and the group flags. Groups you select directly apply in selection order,
-with their includes first. Flagged groups apply last, in flag order.
+With `--no-picker` or redirected input or output, `sb` uses the saved or
+default project name and the group flags. Groups you select directly apply in
+selection order, with their includes first. Flagged groups apply last, in flag order.
 
 The picker lists the most-used groups first, even during a search. `sb` counts
 each group you select directly once per `msb` launch. It also saves that
@@ -73,10 +73,14 @@ or using `--debug` leaves the saved state unchanged. Each configuration file
 has its own state in `$XDG_STATE_HOME/sb/state.sqlite3` (default:
 `~/.local/state/sb/state.sqlite3`).
 
-`SB_PROJECT` is the name from the startup picker. When the current folder is
-the only project path, the default name is that folder's name. Other `PATH`
-arguments produce a short hash of their absolute paths. The order of the
-paths does not change the hash. With `-s` and no paths, the name is `workspace`.
+`SB_PROJECT` is the name from the startup picker. When you give a set of
+project paths a name and launch, `sb` prefills that name for the same paths
+next time, even in a different order.
+
+If there is no saved name, the current folder's name is the default when it
+is the only project path. Other `PATH` arguments produce a short hash of their
+absolute paths. The order of the paths does not change the hash. With `-s` and
+no paths, the name is `workspace`.
 
 Paths are mounted at the same location as on the host. The sandbox starts in
 their deepest shared directory, using each file's parent directory. This does

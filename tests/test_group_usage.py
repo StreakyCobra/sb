@@ -41,7 +41,7 @@ class GroupUsageTests(unittest.TestCase):
                     Path.home() / ".local/state/sb/state.sqlite3",
                 )
 
-    def test_picker_uses_counts_from_existing_database(self):
+    def test_picker_uses_counts_and_selections_from_existing_database(self):
         self.state.parent.mkdir(parents=True)
         with contextlib.closing(sqlite3.connect(self.state)) as db, db:
             db.execute("""
@@ -49,10 +49,16 @@ class GroupUsageTests(unittest.TestCase):
                                           launches INTEGER NOT NULL, PRIMARY KEY (config, name))
             """)
             db.execute("INSERT INTO group_usage VALUES (?, 'python', 1)", (self.config.as_uri(),))
+            db.execute("""
+                CREATE TABLE project_launches (id INTEGER PRIMARY KEY, config TEXT NOT NULL,
+                                               project TEXT NOT NULL, groups TEXT NOT NULL)
+            """)
+            db.execute("INSERT INTO project_launches VALUES (1, ?, 'workspace', ?)",
+                       (self.config.as_uri(), '["java"]'))
 
         def pick(project, names, preselect, groups, usage):
             self.assertEqual(usage, {"python": 1})
-            self.assertEqual(preselect(project), [])
+            self.assertEqual(preselect(project), ["java"])
             return project, ["python"]
 
         self.open_picker(pick, "-s")
@@ -90,6 +96,29 @@ class GroupUsageTests(unittest.TestCase):
 
         self.open_picker(reopen, "-s", "--java")
         self.assertEqual(self.saved_groups("my-project"), ["python", "java"])
+
+    def test_picker_remembers_the_name_for_the_same_paths_in_any_order(self):
+        first, second = (self.config.parent / name for name in ("folderA", "folderB"))
+        first.mkdir()
+        second.mkdir()
+
+        def rename(project, names, preselect, groups, usage):
+            self.assertRegex(project, r"^[a-f0-9]{16}$")
+            return "paired", ["python"]
+
+        self.open_picker(rename, str(first), str(second))
+
+        def reopen(project, names, preselect, groups, usage):
+            self.assertEqual(project, "paired")
+            self.assertEqual(preselect(project), ["python"])
+            return project, preselect(project)
+
+        self.open_picker(reopen, str(second), str(first))
+        argv = ["--config", str(self.config), "--no-picker"]
+        sb.main([*argv, str(second), str(first)])
+        self.assertEqual(self.execute.call_args.args[2]["SB_PROJECT"], "paired")
+        sb.main([*argv, str(first)])
+        self.assertRegex(self.execute.call_args.args[2]["SB_PROJECT"], r"^[a-f0-9]{16}$")
 
     def test_current_folder_inherits_until_it_has_its_own_selection(self):
         root = self.config.parent
@@ -152,12 +181,15 @@ class GroupUsageTests(unittest.TestCase):
 
     def test_failed_exec_does_not_replace_another_launch(self):
         config = self.config.as_uri()
-        earlier = sb.update_launch_state(self.state, config, "workspace", ["java"])
-        later = sb.update_launch_state(self.state, config, "workspace", ["python"])
+        mount_hash = "same-mounts"
+        earlier = sb.update_launch_state(self.state, config, "workspace", ["java"], mount_hash=mount_hash)
+        later = sb.update_launch_state(self.state, config, "workspace", ["python"], mount_hash=mount_hash)
         sb.update_launch_state(self.state, config, "workspace", ["java"], undo=earlier)
         self.assertEqual(self.saved_groups(), ["python"])
+        self.assertEqual(sb.load_project_name(self.state, config, mount_hash), "workspace")
         sb.update_launch_state(self.state, config, "workspace", ["python"], undo=later)
         self.assertEqual(self.saved_groups(), [])
+        self.assertIsNone(sb.load_project_name(self.state, config, mount_hash))
 
     def test_unusable_state_does_not_prevent_launch(self):
         self.state.parent.mkdir(parents=True)

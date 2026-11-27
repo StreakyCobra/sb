@@ -75,7 +75,19 @@ def load_project_groups(path, config, project, *, inherit=False):
     return []
 
 
-def update_launch_state(path, config, project, names, *, undo=None):
+def load_project_name(path, config, mount_hash):
+    try:
+        with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=0.5)) as db:
+            row = db.execute("""
+                SELECT project FROM project_launches WHERE config = ? AND mount_hash = ?
+                ORDER BY id DESC LIMIT 1
+            """, (config, mount_hash)).fetchone()
+            return row[0] if row is not None else None
+    except sqlite3.Error:
+        return None
+
+
+def update_launch_state(path, config, project, names, *, mount_hash=None, undo=None):
     try:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         with closing(sqlite3.connect(path)) as db, db:
@@ -94,12 +106,21 @@ def update_launch_state(path, config, project, names, *, undo=None):
                     id INTEGER PRIMARY KEY,
                     config TEXT NOT NULL,
                     project TEXT NOT NULL,
-                    groups TEXT NOT NULL
+                    groups TEXT NOT NULL,
+                    mount_hash TEXT
                 )
             """)
+            columns = {column[1] for column in db.execute("PRAGMA table_info(project_launches)")}
+            if "mount_hash" not in columns:
+                # Older launches still have group selections but no mount information.
+                db.execute("ALTER TABLE project_launches ADD COLUMN mount_hash TEXT")
             db.execute("""
                 CREATE INDEX IF NOT EXISTS project_launches_by_project
                 ON project_launches (config, project, id)
+            """)
+            db.execute("""
+                CREATE INDEX IF NOT EXISTS project_launches_by_mounts
+                ON project_launches (config, mount_hash, id) WHERE mount_hash IS NOT NULL
             """)
             if undo is not None:
                 db.execute("DELETE FROM project_launches WHERE id = ?", (undo,))
@@ -114,8 +135,9 @@ def update_launch_state(path, config, project, names, *, undo=None):
                 """, ((config, name) for name in names))
                 # Keep earlier launches so a failed exec can remove only its own selection.
                 return db.execute("""
-                    INSERT INTO project_launches (config, project, groups) VALUES (?, ?, ?)
-                """, (config, project, json.dumps(names))).lastrowid
+                    INSERT INTO project_launches (config, project, groups, mount_hash)
+                    VALUES (?, ?, ?, ?)
+                """, (config, project, json.dumps(names), mount_hash)).lastrowid
     except (OSError, sqlite3.Error, UnicodeError):
         return None  # Launch history is optional.
 
@@ -428,7 +450,7 @@ def parse_args(argv):
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help=f"groups file (default: {DEFAULT_CONFIG})")
     parser.add_argument("--debug", action="store_true", help="print the msb command instead of running it")
-    parser.add_argument("--no-picker", action="store_true", help="use the default project name and group flags")
+    parser.add_argument("--no-picker", action="store_true", help="use the saved or default project name and group flags")
     parser.add_argument("-s", "--skip-cwd", action="store_true",
                         help="do not mount the current directory by default; work from home instead")
     parser.add_argument("--no-network-filter", action="store_true",
@@ -463,15 +485,16 @@ def project_mounts(paths, skip_cwd):
     mounts = list(dict.fromkeys(os.path.realpath(path) for path in paths))
     if not mounts and not skip_cwd:
         mounts = [cwd]
+    paths_bytes = b"\0".join(sorted(map(os.fsencode, mounts)))
+    mount_hash = hashlib.sha256(paths_bytes).hexdigest() if mounts else None
     cwd_only = mounts == [cwd]
     if cwd_only:
         project = os.path.basename(cwd) or "workspace"
-    elif mounts:
-        paths_bytes = b"\0".join(sorted(map(os.fsencode, mounts)))
-        project = hashlib.sha256(paths_bytes).hexdigest()[:16]
+    elif mount_hash is not None:
+        project = mount_hash[:16]
     else:
         project = "workspace"
-    return mounts, project, cwd_only
+    return mounts, project, cwd_only, mount_hash
 
 
 def pick_startup(project, names, preselect, groups, usage):
@@ -701,9 +724,12 @@ def build_command(args, groups, command, paths, project):
 
 def main(argv):
     args, groups, command = parse_args(argv)
-    paths, project, cwd_only = project_mounts(args.paths, args.skip_cwd)
+    paths, project, cwd_only, mount_hash = project_mounts(args.paths, args.skip_cwd)
     state_path = state_database_path()
     config = Path(os.path.realpath(args.config)).as_uri()
+    if mount_hash is not None:
+        project = load_project_name(state_path, config, mount_hash) or project
+    prefilled_project = project
     if not args.no_picker and sys.stdin.isatty() and sys.stdout.isatty():
         always_applied = set(resolve(groups, []))
         names = [name for name in groups if name not in always_applied]
@@ -733,7 +759,9 @@ def main(argv):
     selected = list(dict.fromkeys(args.groups))
     launch = None
     if shutil.which("msb", path=env.get("PATH", os.defpath)):
-        launch = update_launch_state(state_path, config, project, selected)
+        # Only an explicit rename changes the saved name for these mounts.
+        launch = update_launch_state(state_path, config, project, selected,
+                                     mount_hash=mount_hash if project != prefilled_project else None)
     try:
         os.execvpe("msb", cmd, env)
     except BaseException as error:
