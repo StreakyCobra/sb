@@ -23,12 +23,13 @@ class SkipCwdTests(unittest.TestCase):
                          patch.dict(os.environ), contextlib.redirect_stdout(io.StringIO()) as output:
                         sb.main(["--config", str(config), "--debug", option, *paths])
                         command = shlex.split(output.getvalue())
-                        self.assertEqual(os.environ["SB_PROJECT"], "workspace")
                         expected = os.path.realpath(directory) if paths else str(Path.home())
                         self.assertEqual(command[command.index("-w") + 1], expected)
                         if paths:
+                            self.assertRegex(os.environ["SB_PROJECT"], r"^[a-f0-9]{16}$")
                             self.assertIn(f"{expected}:{expected}", command)
                         else:
+                            self.assertEqual(os.environ["SB_PROJECT"], "workspace")
                             self.assertNotIn("-v", command)
 
     def test_home_without_skip_is_rejected(self):

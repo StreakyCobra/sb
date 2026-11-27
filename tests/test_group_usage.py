@@ -37,7 +37,7 @@ class GroupUsageTests(unittest.TestCase):
         argv = ["--config", str(self.config), "-s"]
         with (patch.object(sb.sys.stdin, "isatty", return_value=True),
               patch.object(sb.sys.stdout, "isatty", return_value=True),
-              patch.object(sb, "pick_groups", return_value=["python"]) as picker):
+              patch.object(sb, "pick_startup", return_value=("workspace", ["python"])) as picker):
             sb.main(argv)
         self.assertEqual(picker.call_args.args[-1], {"python": 1})
         self.assertEqual(self.usage(), {"python": 2})
@@ -57,7 +57,7 @@ class GroupUsageTests(unittest.TestCase):
             sb.main([*argv, "--no-picker", "--debug"])
         with (patch.object(sb.sys.stdin, "isatty", return_value=True),
               patch.object(sb.sys.stdout, "isatty", return_value=True),
-              patch.object(sb, "pick_groups", return_value=None)):
+              patch.object(sb, "pick_startup", return_value=None)):
             with self.assertRaises(SystemExit) as cancelled:
                 sb.main(argv)
             self.assertEqual(cancelled.exception.code, 130)

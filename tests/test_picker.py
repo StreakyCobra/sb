@@ -35,19 +35,22 @@ env = { DOCKER = "on" }
                 with self.subTest(flags=flags):
                     config.write_text(defaults + extra)
                     output = io.StringIO()
+                    selection = ("test-project", ["java"] if extra else [])
                     with (patch.dict(os.environ),
                           contextlib.redirect_stdout(output),
                           patch.object(output, "isatty", return_value=True),
                           patch.object(sb.sys.stdin, "isatty", return_value=True),
                           patch.object(sb, "image_cached", return_value=True),
                           patch.object(sb, "load_group_usage", return_value={}),
-                          patch.object(sb, "pick_groups", return_value=["java"]) as picker):
+                          patch.object(sb, "pick_startup", return_value=selection) as picker):
                         sb.main(["--config", str(config), "--debug", "-s", "--base", *flags])
                     self.assertIn("DOCKER=on", shlex.split(output.getvalue()))
-                    if extra:
-                        picker.assert_called_once_with(["java", "maven"], ["java"], sb.load_groups(config), {})
-                    else:
-                        picker.assert_not_called()
+                    picker.assert_called_once()
+                    project, names, _, groups, usage = picker.call_args.args
+                    self.assertEqual(project, "workspace")
+                    self.assertEqual(names, ["java", "maven"] if extra else [])
+                    self.assertEqual(groups, sb.load_groups(config))
+                    self.assertEqual(usage, {})
 
 
 @unittest.skipIf(create_pipe_input is None, "Prompt Toolkit is not installed")
@@ -55,13 +58,33 @@ class PickerTests(unittest.TestCase):
     def pick(self, keys, preselected=(), usage=None, *, groups=None, rendered=None):
         if groups is None:
             groups = {name: {} for name in ("java", "python", "circleci", "python-3")}
+        result = self.startup("\r" + keys, lambda _: preselected, groups, usage, rendered)
+        return result[1] if result is not None else None
+
+    def startup(self, keys, preselect, groups, usage=None, rendered=None):
         output = DummyOutput()
         if rendered is not None:
             output.write = rendered.write
         with create_pipe_input() as terminal, create_app_session(input=terminal, output=output):
             terminal.send_text(keys)
             terminal.close()
-            return sb.pick_groups(list(groups), preselected, groups, usage)
+            return sb.pick_startup("current-project", list(groups), preselect, groups, usage or {})
+
+    def test_typing_replaces_prefilled_project_and_loads_its_groups(self):
+        groups = {"java": {}, "python": {}}
+        saved = {"current-project": ["java"], "my job": ["python"]}
+        rendered = io.StringIO()
+        self.assertEqual(self.startup("my job\r\r", saved.get, groups, rendered=rendered),
+                         ("my job", ["python"]))
+        self.assertIn("current-project", rendered.getvalue())
+
+    def test_tab_back_keeps_group_changes_if_project_is_unchanged(self):
+        self.assertEqual(self.startup("\t \t\t\r", lambda _: [], {"java": {}}),
+                         ("current-project", ["java"]))
+
+    def test_paste_replaces_project_when_there_are_no_optional_groups(self):
+        self.assertEqual(self.startup("\x1b[200~new-project\x1b[201~\r", None, {}),
+                         ("new-project", []))
 
     def test_preselected_group_shows_all_includes_checked(self):
         groups = {"web": {"include": ["npm"]}, "npm": {"include": ["node"]}, "node": {}}

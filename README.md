@@ -38,22 +38,29 @@ sb --no-network-filter                   # ignore configured allowlists for this
 sb --help                                # list the groups
 ```
 
-In a terminal, `sb` opens the picker if there are optional groups. Flags such as
-`--java` check those groups in advance. The picker hides `[default]` and every
-group it includes, even through other groups. These groups always apply.
+In a terminal, `sb` opens the startup picker with the project name selected.
+Type to replace the name, or press Enter to keep it and move to the groups.
+Press Tab to switch between the name and the groups. If there are no optional
+groups, press Enter to launch from the name field.
+
+Flags such as `--java` preselect groups.
+
+The picker hides `[default]` and every group it includes, even through other
+groups. These groups always apply.
 
 - Use the arrow keys or `j` and `k` to move.
 - Type other characters to filter by letters in order. For example, `pythn` matches
   `python`. Use `J` or `K` to search for those letters.
 - Press Space to toggle the highlighted group and clear the search.
 - Press Backspace to clear the entire search. Checked groups stay checked while you search.
-- Press Enter to confirm, or Esc to cancel.
+- Press Enter to launch, or Esc to cancel.
 
 When you check a group, the picker also checks its included groups and marks them as `(included)`.
 Press Space on an included group to keep it checked on its own.
 
-If input or output is redirected, `sb` skips the picker and uses the group flags directly.
-Groups you check directly apply in selection order, with their includes first. Flags start in flag order.
+With `--no-picker` or redirected input or output, `sb` uses the default project
+name and the group flags. Groups you select directly apply in selection order,
+with their includes first. Flags start in flag order.
 
 The picker lists the most-used groups first, even during a search. `sb` counts
 each group you select directly once per `msb` launch, including launches with
@@ -61,15 +68,19 @@ each group you select directly once per `msb` launch, including launches with
 `sb` keeps separate counts for each configuration file in
 `$XDG_STATE_HOME/sb/state.sqlite3` (default: `~/.local/state/sb/state.sqlite3`).
 
+`SB_PROJECT` is the name from the startup picker. When the current folder is
+the only project path, the default name is that folder's name. Other `PATH`
+arguments produce a short hash of their absolute paths. The order of the
+paths does not change the hash. With `-s` and no paths, the name is `workspace`.
+
 Paths are mounted at the same location as on the host. The sandbox starts in
 their deepest shared directory, using each file's parent directory. This does
-not mount any additional host paths. `SB_PROJECT` is the starting directory's
-name. If the shared directory is `/`, the sandbox starts in home and uses
-`SB_PROJECT=workspace`. With `-s`, it starts in the first explicit directory
-or in home and always uses `SB_PROJECT=workspace`. The `-s` option also disables automatic
-`git_metadata` mounts, even for explicit paths. Secrets are read from `pass` (or
-the environment) and injected by msb on the way out: the sandbox only sees placeholders. See
-`example.toml` for the group syntax.
+not mount any additional host paths. If the shared directory is `/`, the sandbox
+starts in home. With `-s`, it starts in the first explicit directory or in home.
+The `-s` option also disables automatic `git_metadata` mounts, even for explicit
+paths. Secrets are read from `pass` (or the environment) and injected by msb on
+the way out: the sandbox only sees placeholders. See `example.toml` for the group
+syntax.
 
 Configured commands can be strings, evaluated by `sh -c` inside the sandbox:
 

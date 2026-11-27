@@ -6,14 +6,15 @@
        [--GROUP ...] [PATH ...] [-- COMMAND ...]
 
 Each PATH (default: the current directory) is mounted at the same absolute path
-in the sandbox; the first directory becomes the working directory. The group
-named "default" is always applied. In a terminal, use the picker to select
-other groups; --GROUP preselects a group.
+in the sandbox. The group named "default" is always applied. In a terminal,
+use the picker to name the project and select other groups; --GROUP preselects
+a group.
 -p, -v and -e add to the ports, mounts and env of the selected groups.
 See example.toml for the file format.
 """
 
 import argparse
+import hashlib
 import os
 import random
 import re
@@ -393,7 +394,7 @@ def parse_args(argv):
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help=f"groups file (default: {DEFAULT_CONFIG})")
     parser.add_argument("--debug", action="store_true", help="print the msb command instead of running it")
-    parser.add_argument("--no-picker", action="store_true", help="use the group flags and skip the interactive picker")
+    parser.add_argument("--no-picker", action="store_true", help="use the default project name and group flags")
     parser.add_argument("-s", "--skip-cwd", action="store_true",
                         help="do not mount the current directory by default; work from home instead")
     parser.add_argument("--no-network-filter", action="store_true",
@@ -421,26 +422,50 @@ def parse_args(argv):
     return args, groups, command
 
 
-def pick_groups(names, preselected, groups, usage=None):
+def project_mounts(paths, skip_cwd):
+    cwd = str(Path.cwd().resolve())
+    if not skip_cwd and cwd == str(Path.home().resolve()):
+        fail("cannot run from the home directory without --skip-cwd. Change directory or use --skip-cwd.")
+    mounts = list(dict.fromkeys(os.path.realpath(path) for path in paths))
+    if not mounts and not skip_cwd:
+        mounts = [cwd]
+    cwd_only = mounts == [cwd]
+    if cwd_only:
+        project = os.path.basename(cwd) or "workspace"
+    elif mounts:
+        paths_bytes = b"\0".join(sorted(map(os.fsencode, mounts)))
+        project = hashlib.sha256(paths_bytes).hexdigest()[:16]
+    else:
+        project = "workspace"
+    return mounts, project
+
+
+def pick_startup(project, names, preselect, groups, usage):
     try:
         from prompt_toolkit.application import Application
         from prompt_toolkit.completion import CompleteEvent, FuzzyCompleter, WordCompleter
         from prompt_toolkit.document import Document
+        from prompt_toolkit.filters import has_focus
         from prompt_toolkit.key_binding import KeyBindings
         from prompt_toolkit.keys import Keys
         from prompt_toolkit.layout import HSplit, Layout
         from prompt_toolkit.styles import Style
-        from prompt_toolkit.widgets import CheckboxList, Label
+        from prompt_toolkit.widgets import CheckboxList, Label, TextArea
     except ModuleNotFoundError:
-        fail("install prompt_toolkit to open the group picker, or use --no-picker")
+        fail("install prompt_toolkit to open the startup picker, or use --no-picker")
 
     class GroupList(CheckboxList):
         def __init__(self, names):
             self.labels = {name: partial(self.label_for, name) for name in names}
-            super().__init__(list(self.labels.items()), default_values=list(dict.fromkeys(preselected)),
-                             select_character="x")
-            self.explicit = self.current_values.copy()
+            super().__init__(list(self.labels.items()), select_character="x")
+            self.control.get_key_bindings().remove(Keys.Any)  # Use fuzzy search instead.
+
+        def preselect(self, selected):
+            self.explicit = list(dict.fromkeys(name for name in selected if name in self.labels))
             self.current_values = resolve(groups, self.explicit, strict=False)
+            self.show_matches(names)
+            if self.explicit:
+                self._selected_index = names.index(self.explicit[0])
 
         def label_for(self, name):
             label = name if name.isprintable() else repr(name)
@@ -468,16 +493,59 @@ def pick_groups(names, preselected, groups, usage=None):
                 return [("", "No matching groups")]
             return super()._get_text_fragments()
 
-    usage = usage or {}
     names = sorted(names, key=lambda name: usage.get(name, 0), reverse=True)
-    choices = GroupList(names)
-    # Replace the widget's first-letter navigation with fuzzy search.
-    choices.control.get_key_bindings().remove(Keys.Any)
+    choices = GroupList(names) if names else None
+    if choices is not None:
+        choices.preselect(preselect(project))
     completer = FuzzyCompleter(WordCompleter(names, sentence=True), WORD=True)
     query = ""
+    default_project = project
+    project_field = TextArea(text=project, multiline=False, prompt="Project: ")
+    project_focused = has_focus(project_field)
+    group_focused = ~project_focused
     keys = KeyBindings()
 
-    @keys.add(Keys.Any)
+    def select_project_text():
+        buffer = project_field.buffer
+        buffer.cursor_position = 0
+        buffer.start_selection()
+        buffer.cursor_position = len(buffer.text)
+        buffer.selection_state.enter_shift_mode()
+
+    select_project_text()
+
+    @keys.add(Keys.BracketedPaste, filter=project_focused)
+    def paste_project(event):
+        buffer = project_field.buffer
+        if buffer.selection_state:
+            buffer.cut_selection()
+        buffer.insert_text(" ".join(event.data.replace("\x00", "").splitlines()))
+
+    @keys.add("enter", filter=project_focused, eager=True)
+    @keys.add("tab", filter=project_focused if choices else False)
+    @keys.add("s-tab", filter=project_focused if choices else False)
+    def confirm_project(event):
+        nonlocal project, query
+        name = project_field.text if project_field.text.strip() else default_project
+        if name != project_field.text:
+            project_field.buffer.document = Document(name, len(name))
+        project_field.buffer.exit_selection()
+        if choices is None:
+            event.app.exit(result=(name, []))
+            return
+        if name != project:
+            project = name
+            query = ""
+            choices.preselect(preselect(project))
+        event.app.layout.focus(choices)
+
+    @keys.add("tab", filter=group_focused)
+    @keys.add("s-tab", filter=group_focused)
+    def focus_project(event):
+        event.app.layout.focus(project_field)
+        select_project_text()
+
+    @keys.add(Keys.Any, filter=group_focused)
     def search(event):
         nonlocal query
         if event.data.isprintable():
@@ -486,8 +554,8 @@ def pick_groups(names, preselected, groups, usage=None):
                              key=lambda match: usage.get(match.text, 0), reverse=True)
             choices.show_matches([match.text for match in matches])
 
-    @keys.add(" ", eager=True)
-    @keys.add("backspace", eager=True)
+    @keys.add(" ", filter=group_focused, eager=True)
+    @keys.add("backspace", filter=group_focused, eager=True)
     def toggle_or_clear(event):
         nonlocal query
         if event.data == " ":
@@ -496,34 +564,41 @@ def pick_groups(names, preselected, groups, usage=None):
             query = ""
             choices.show_matches(names, keep_focus=True)
 
-    @keys.add("enter", eager=True)
+    @keys.add("enter", filter=group_focused, eager=True)
     def confirm(event):
-        event.app.exit(result=choices.explicit)
+        event.app.exit(result=(project, choices.explicit))
 
-    @keys.add("escape")
-    @keys.add("c-c")
+    @keys.add("escape", eager=True)
+    @keys.add("c-c", eager=True)
     def cancel(event):
         event.app.exit()
 
-    title = "Select groups ([default] always applies)" if DEFAULT_GROUP in groups else "Select groups"
-    layout = Layout(HSplit([
-        Label(title),
-        Label("↑/↓ or j/k: move   Space: toggle   Enter: confirm   Esc: cancel"),
-        Label(lambda: f"Search: {query}" if query else "Type to search. Backspace clears the search."),
-        choices,
-    ]), focused_element=choices)
+    def instructions():
+        if choices is None:
+            return "Type to replace the name. Enter: launch   Esc: cancel"
+        if project_focused():
+            return "Type to replace the name. Enter or Tab: go to groups   Esc: cancel"
+        return "↑/↓ or j/k: move   Space: toggle   Tab: edit name   Enter: launch   Esc: cancel"
+
+    rows = [project_field, Label(instructions)]
+    if choices is not None:
+        title = "Select groups ([default] always applies)" if DEFAULT_GROUP in groups else "Select groups"
+        rows += [
+            Label(title),
+            Label(lambda: f"Search: {query}" if query else "Type to search. Backspace clears the search."),
+            choices,
+        ]
+    layout = Layout(HSplit(rows), focused_element=project_field)
     style = Style.from_dict({"checkbox-selected": "reverse"})
     return Application(layout=layout, key_bindings=keys, style=style, erase_when_done=True).run()
 
 
-def build_command(args, groups, command):
+def build_command(args, groups, command, paths, project):
     """Return the msb command line and the secrets it needs, without running it.
 
     It sets SB_PROJECT and random port variables in os.environ for $${VAR}
     expansion, and asks git and msb about worktrees and cached images.
     """
-    if not args.skip_cwd and Path.cwd().resolve() == Path.home().resolve():
-        fail("cannot run from the home directory without --skip-cwd. Change directory or use --skip-cwd.")
     names = resolve(groups, args.groups)
     settings = merge(groups, names)
     # Command-line additions behave like one more group applied last.
@@ -531,12 +606,7 @@ def build_command(args, groups, command):
     settings["mounts"] += args.mounts
     settings["env"] |= dict(item.split("=", 1) for item in args.env)
 
-    paths = [os.path.realpath(path) for path in args.paths]
-    if not paths and not args.skip_cwd:
-        paths = [os.getcwd()]
-
     workdir = str(Path.home())
-    project = "workspace"
     if args.skip_cwd:
         workdir = next((path for path in paths if os.path.isdir(path)), workdir)
     elif paths:
@@ -544,7 +614,6 @@ def build_command(args, groups, command):
                                        for path in paths])
         if ancestor != os.path.sep:
             workdir = ancestor
-            project = os.path.basename(ancestor)
     os.environ["SB_PROJECT"] = project
 
     if "image" not in settings:
@@ -565,7 +634,7 @@ def build_command(args, groups, command):
         flags += ["--cpus", str(settings["cpus"])]
     if "memory" in settings:
         flags += ["--memory", str(settings["memory"])]
-    mounts = list(dict.fromkeys(paths))
+    mounts = paths.copy()
     if settings.get("git_metadata") and not args.skip_cwd:
         mounts += [common for path in paths if os.path.isdir(path)
                    if (common := git_common_dir(path)) and common not in mounts]
@@ -598,18 +667,18 @@ def build_command(args, groups, command):
 
 def main(argv):
     args, groups, command = parse_args(argv)
+    paths, project = project_mounts(args.paths, args.skip_cwd)
     state_path = state_database_path()
     config = Path(os.path.realpath(args.config)).as_uri()
     if not args.no_picker and sys.stdin.isatty() and sys.stdout.isatty():
         always_applied = set(resolve(groups, []))
         names = [name for name in groups if name not in always_applied]
-        if names:
-            preselected = [name for name in args.groups if name not in always_applied]
-            usage = load_group_usage(state_path, config)
-            args.groups = pick_groups(names, preselected, groups, usage)
-            if args.groups is None:
-                sys.exit(130)
-    cmd, secrets = build_command(args, groups, command)
+        usage = load_group_usage(state_path, config)
+        selection = pick_startup(project, names, lambda _: args.groups, groups, usage)
+        if selection is None:
+            sys.exit(130)
+        project, args.groups = selection
+    cmd, secrets = build_command(args, groups, command, paths, project)
 
     if args.debug:
         # A runnable script: secrets are read like sb does (first output line), not here.
