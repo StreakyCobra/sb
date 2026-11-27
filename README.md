@@ -48,9 +48,8 @@ You can add group flags or pass a command for this run. Projects saved before
 the launcher was added appear after you launch them once without `-i`.
 
 In a terminal, `sb` opens the startup picker with the project name selected.
-Type to replace the name, or press Enter to keep it and move to the groups.
-Press Tab to switch between the name and the groups. If there are no optional
-groups, press Enter to launch from the name field.
+Type to replace the name. Press Tab to switch between the name and the groups.
+Press Enter to launch from either field.
 
 The picker selects the groups from the last launch with the same project
 paths. Renaming a project keeps its groups. Flags such as `--java` also select

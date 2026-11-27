@@ -667,25 +667,26 @@ def pick_startup(project, names, preselect, groups, usage):
             buffer.cut_selection()
         buffer.insert_text(" ".join(event.data.replace("\x00", "").splitlines()))
 
-    @keys.add("enter", filter=project_focused, eager=True)
-    @keys.add("tab", filter=project_focused if choices else False)
-    @keys.add("s-tab", filter=project_focused if choices else False)
-    def confirm_project(event):
+    def accept_project_name():
         nonlocal project, query, initial_groups
         name = project_field.text if project_field.text.strip() else default_project
         if name != project_field.text:
             project_field.buffer.document = Document(name, len(name))
         project_field.buffer.exit_selection()
-        if choices is None:
-            event.app.exit(result=(name, []))
+        if name == project:
             return
-        if name != project:
-            project = name
+        project = name
+        if choices is not None:
             selected = preselect(project)
             if selected != initial_groups:
                 initial_groups = selected
                 query = ""
                 choices.preselect(selected)
+
+    @keys.add("tab", filter=project_focused if choices else False)
+    @keys.add("s-tab", filter=project_focused if choices else False)
+    def focus_groups(event):
+        accept_project_name()
         event.app.layout.focus(choices)
 
     @keys.add("tab", filter=group_focused)
@@ -713,9 +714,10 @@ def pick_startup(project, names, preselect, groups, usage):
             query = ""
             choices.show_matches(names, keep_focus=True)
 
-    @keys.add("enter", filter=group_focused, eager=True)
+    @keys.add("enter", eager=True)
     def confirm(event):
-        event.app.exit(result=(project, choices.explicit))
+        accept_project_name()
+        event.app.exit(result=(project, choices.explicit if choices is not None else []))
 
     @keys.add("escape", eager=True)
     @keys.add("c-c", eager=True)
@@ -726,7 +728,7 @@ def pick_startup(project, names, preselect, groups, usage):
         if choices is None:
             return "Type to replace the name. Enter: launch   Esc: cancel"
         if project_focused():
-            return "Type to replace the name. Enter or Tab: go to groups   Esc: cancel"
+            return "Type to replace the name. Tab: edit groups   Enter: launch   Esc: cancel"
         return "↑/↓ or j/k: move   Space: toggle   Tab: edit name   Enter: launch   Esc: cancel"
 
     rows = [project_field, Label(instructions)]

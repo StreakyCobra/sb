@@ -58,7 +58,7 @@ class PickerTests(unittest.TestCase):
     def pick(self, keys, preselected=(), usage=None, *, groups=None, rendered=None):
         if groups is None:
             groups = {name: {} for name in ("java", "python", "circleci", "python-3")}
-        result = self.startup("\r" + keys, lambda _: preselected, groups, usage, rendered)
+        result = self.startup("\t" + keys, lambda _: preselected, groups, usage, rendered)
         return result[1] if result is not None else None
 
     def startup(self, keys, preselect, groups, usage=None, rendered=None):
@@ -74,16 +74,22 @@ class PickerTests(unittest.TestCase):
         groups = {"java": {}, "python": {}}
         saved = {"current-project": ["java"], "my job": ["python"]}
         rendered = io.StringIO()
-        self.assertEqual(self.startup("my job\r\r", saved.get, groups, rendered=rendered),
-                         ("my job", ["python"]))
+        for keys in ("my job\r", "my job\t\r"):
+            with self.subTest(keys=keys):
+                self.assertEqual(self.startup(keys, saved.get, groups, rendered=rendered),
+                                 ("my job", ["python"]))
         self.assertIn("current-project", rendered.getvalue())
+
+    def test_enter_launches_with_the_prefilled_name_and_groups(self):
+        self.assertEqual(self.startup("\r", lambda _: ["java"], {"java": {}}),
+                         ("current-project", ["java"]))
 
     def test_tab_back_keeps_group_changes_if_project_is_unchanged(self):
         self.assertEqual(self.startup("\t \t\t\r", lambda _: [], {"java": {}}),
                          ("current-project", ["java"]))
 
     def test_renaming_keeps_group_changes_if_the_saved_groups_are_the_same(self):
-        self.assertEqual(self.startup("\t \tnew-project\r\r", lambda _: [], {"java": {}}),
+        self.assertEqual(self.startup("\t \tnew-project\r", lambda _: [], {"java": {}}),
                          ("new-project", ["java"]))
 
     def test_paste_replaces_project_when_there_are_no_optional_groups(self):
