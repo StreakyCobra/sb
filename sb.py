@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """sb: compose an `msb run` command from groups defined in a TOML file.
 
-    sb [--config FILE] [--debug] [--no-picker] [-s] [--no-network-filter]
+    sb [--config FILE] [--debug] [-i] [--no-picker] [-s] [--no-network-filter]
        [-p PORT] [-v MOUNT] [-e KEY=VALUE]
        [--GROUP ...] [PATH ...] [-- COMMAND ...]
 
@@ -28,6 +28,7 @@ import sys
 import time
 import tomllib
 from contextlib import ExitStack, closing, contextmanager, nullcontext
+from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
 
@@ -38,7 +39,17 @@ DEFAULT_CONFIG = CONFIG_HOME / "sb" / "config.toml"
 SECRET_KEYS = {"cmd", "hosts", "headers"}
 BUILTIN_OPTIONS = {
     "config", "debug", "help", "port", "mount", "env", "skip-cwd", "no-network-filter", "no-picker",
+    "interactive",
 }
+
+
+@dataclass
+class ProjectLaunch:
+    mount_hash: str
+    name: str
+    paths: list[str]
+    skip_cwd: bool
+    groups: list[str]
 
 
 def fail(message):
@@ -91,6 +102,20 @@ def load_project_config(path, config, mount_hash):
     return None, None
 
 
+def load_recent_projects(path, config):
+    try:
+        with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=0.5)) as db:
+            rows = db.execute("""
+                SELECT mount_hash, project, paths, skip_cwd, groups
+                FROM project_config WHERE config = ? AND paths IS NOT NULL
+                ORDER BY last_used DESC, mount_hash
+            """, (config,))
+            return [ProjectLaunch(mount_hash, name, json.loads(paths), bool(skip_cwd), json.loads(groups))
+                    for mount_hash, name, paths, skip_cwd, groups in rows]
+    except (sqlite3.Error, ValueError):
+        return []
+
+
 @contextmanager
 def lock_launch_state(path):
     """Serialize state updates and rollback until exec closes the non-inheritable lock."""
@@ -105,7 +130,7 @@ def lock_launch_state(path):
             yield True
 
 
-def record_launch(path, config, mount_hash, project, names, *, renamed):
+def record_launch(path, config, launch, *, renamed):
     try:
         with closing(sqlite3.connect(path)) as db, db:
             db.execute("BEGIN IMMEDIATE")
@@ -125,53 +150,65 @@ def record_launch(path, config, mount_hash, project, names, *, renamed):
                     custom_name INTEGER NOT NULL,
                     groups TEXT NOT NULL,
                     last_used INTEGER NOT NULL,
+                    paths TEXT,
+                    skip_cwd INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (config, mount_hash)
                 )
             """)
+            columns = {column[1] for column in db.execute("PRAGMA table_info(project_config)")}
+            if "paths" not in columns:
+                # A mount hash cannot recover the paths of a previously saved project.
+                db.execute("ALTER TABLE project_config ADD COLUMN paths TEXT")
+                db.execute("ALTER TABLE project_config ADD COLUMN skip_cwd INTEGER NOT NULL DEFAULT 0")
             db.execute("""
                 CREATE INDEX IF NOT EXISTS project_config_by_name
                 ON project_config (config, project, last_used DESC, mount_hash)
             """)
             previous = db.execute("""
-                SELECT project, custom_name, groups, last_used
+                SELECT project, custom_name, groups, last_used, paths, skip_cwd
                 FROM project_config WHERE config = ? AND mount_hash = ?
-            """, (config, mount_hash)).fetchone()
+            """, (config, launch.mount_hash)).fetchone()
             # A launch that accepted the prefilled name must not undo a concurrent rename.
+            project = launch.name
             if not renamed and previous is not None and previous[1]:
                 project, renamed = previous[:2]
             db.execute("""
-                INSERT INTO project_config (config, mount_hash, project, custom_name, groups, last_used)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO project_config (config, mount_hash, project, custom_name, groups, last_used, paths, skip_cwd)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (config, mount_hash) DO UPDATE SET
                     project = excluded.project, custom_name = excluded.custom_name,
-                    groups = excluded.groups, last_used = excluded.last_used
-            """, (config, mount_hash, project, renamed, json.dumps(names), time.time_ns()))
+                    groups = excluded.groups, last_used = excluded.last_used,
+                    paths = excluded.paths, skip_cwd = excluded.skip_cwd
+            """, (config, launch.mount_hash, project, renamed, json.dumps(launch.groups), time.time_ns(),
+                  json.dumps(launch.paths), launch.skip_cwd))
             db.executemany("""
                 INSERT INTO group_usage (config, name, launches) VALUES (?, ?, 1)
                 ON CONFLICT (config, name) DO UPDATE SET launches = launches + 1
-            """, ((config, name) for name in names))
+            """, ((config, name) for name in launch.groups))
             return previous or ()  # An empty tuple means this was the first launch.
     except (OSError, sqlite3.Error, UnicodeError):
         return None  # State tracking is optional.
 
 
-def undo_launch(path, config, mount_hash, names, previous):
+def undo_launch(path, config, launch, previous):
     try:
         with closing(sqlite3.connect(path)) as db, db:
             db.execute("BEGIN IMMEDIATE")
             if previous:
                 db.execute("""
-                    UPDATE project_config SET project = ?, custom_name = ?, groups = ?, last_used = ?
+                    UPDATE project_config SET project = ?, custom_name = ?, groups = ?, last_used = ?,
+                        paths = ?, skip_cwd = ?
                     WHERE config = ? AND mount_hash = ?
-                """, (*previous, config, mount_hash))
+                """, (*previous, config, launch.mount_hash))
             else:
-                db.execute("DELETE FROM project_config WHERE config = ? AND mount_hash = ?", (config, mount_hash))
+                db.execute("DELETE FROM project_config WHERE config = ? AND mount_hash = ?",
+                           (config, launch.mount_hash))
             db.executemany("""
                 UPDATE group_usage SET launches = launches - 1 WHERE config = ? AND name = ?
-            """, ((config, name) for name in names))
+            """, ((config, name) for name in launch.groups))
             db.executemany("""
                 DELETE FROM group_usage WHERE config = ? AND name = ? AND launches = 0
-            """, ((config, name) for name in names))
+            """, ((config, name) for name in launch.groups))
     except (OSError, sqlite3.Error, UnicodeError):
         pass
 
@@ -498,6 +535,7 @@ def parse_args(argv):
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help=f"groups file (default: {DEFAULT_CONFIG})")
     parser.add_argument("--debug", action="store_true", help="print the msb command instead of running it")
+    parser.add_argument("-i", "--interactive", action="store_true", help="choose a recent project to launch")
     parser.add_argument("--no-picker", action="store_true", help="use the saved or default project name and group flags")
     parser.add_argument("-s", "--skip-cwd", action="store_true",
                         help="do not mount the current directory by default; work from home instead")
@@ -520,6 +558,8 @@ def parse_args(argv):
                                 help="preselect this group")
     parser.add_argument("paths", nargs="*", metavar="PATH", help="files or directories to mount (default: .)")
     args = parser.parse_args(argv)
+    if args.interactive and (args.paths or args.skip_cwd or args.no_picker):
+        parser.error("-i cannot be combined with PATH arguments, --skip-cwd, or --no-picker")
     for item in args.env:
         if "=" not in item:
             parser.error(f"-e/--env expects KEY=VALUE, got {item!r}")
@@ -702,28 +742,99 @@ def pick_startup(project, names, preselect, groups, usage):
     return Application(layout=layout, key_bindings=keys, style=style, erase_when_done=True).run()
 
 
-def build_command(args, groups, command, paths, project):
+def pick_project(projects):
+    try:
+        from prompt_toolkit.application import Application
+        from prompt_toolkit.completion import CompleteEvent, FuzzyCompleter, WordCompleter
+        from prompt_toolkit.document import Document
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.keys import Keys
+        from prompt_toolkit.layout import HSplit, Layout
+        from prompt_toolkit.styles import Style
+        from prompt_toolkit.widgets import Label, RadioList
+    except ModuleNotFoundError:
+        fail("install prompt_toolkit to open the project launcher")
+
+    class ProjectList(RadioList):
+        def _get_text_fragments(self):
+            if not self.values:
+                return [("", "No matching projects")]
+            return super()._get_text_fragments()
+
+    entries = []
+    for project in projects:
+        paths = ", ".join(project.paths) or "no project paths"
+        label = f"{project.name}  ·  {paths}"
+        entries.append((project, label if label.isprintable() else repr(label)))
+    choices = ProjectList(entries, open_character="", select_character=" ", close_character="")
+    bindings = choices.control.get_key_bindings()
+    bindings.remove(Keys.Any)
+    bindings.remove(" ")
+    completer = FuzzyCompleter(WordCompleter([label for _, label in entries], sentence=True),
+                               pattern=r"^.+$")
+    query = ""
+    keys = KeyBindings()
+
+    @keys.add(Keys.Any)
+    def search(event):
+        nonlocal query
+        if event.data.isprintable():
+            query += event.data
+            matches = {match.text for match in completer.get_completions(Document(query), CompleteEvent())}
+            choices.values = [(project, label) for project, label in entries if label in matches]
+            choices._selected_index = 0
+
+    @keys.add("backspace", eager=True)
+    def clear_search(event):
+        nonlocal query
+        if query:
+            query = ""
+            choices.values = entries
+            choices._selected_index = 0
+
+    @keys.add("enter", eager=True)
+    def launch(event):
+        if choices.values:
+            event.app.exit(result=choices.values[choices._selected_index][0])
+
+    @keys.add("escape", eager=True)
+    @keys.add("c-c", eager=True)
+    def cancel(event):
+        event.app.exit()
+
+    layout = Layout(HSplit([
+        Label("Launch a project (most recent first)"),
+        Label("↑/↓ or j/k: move   Enter: launch   Esc: cancel"),
+        Label(lambda: f"Search: {query}" if query else "Type to search. Backspace clears the search."),
+        choices,
+    ]), focused_element=choices)
+    style = Style.from_dict({"radio-selected": "reverse"})
+    return Application(layout=layout, key_bindings=keys, style=style, erase_when_done=True).run()
+
+
+def build_command(args, groups, command, launch):
     """Return the msb command line and the secrets it needs, without running it.
 
     It sets SB_PROJECT and random port variables in os.environ for $${VAR}
     expansion, and asks git and msb about worktrees and cached images.
     """
-    names = resolve(groups, args.groups)
+    names = resolve(groups, launch.groups)
     settings = merge(groups, names)
     # Command-line additions behave like one more group applied last.
     settings["ports"] += args.ports
     settings["mounts"] += args.mounts
     settings["env"] |= dict(item.split("=", 1) for item in args.env)
 
+    paths = launch.paths
     workdir = str(Path.home())
-    if args.skip_cwd:
+    if launch.skip_cwd:
         workdir = next((path for path in paths if os.path.isdir(path)), workdir)
     elif paths:
         ancestor = os.path.commonpath([os.path.dirname(path) if os.path.isfile(path) else path
                                        for path in paths])
         if ancestor != os.path.sep:
             workdir = ancestor
-    os.environ["SB_PROJECT"] = project
+    os.environ["SB_PROJECT"] = launch.name
 
     if "image" not in settings:
         fail("no image set: add image = \"...\" to the [default] group")
@@ -744,7 +855,7 @@ def build_command(args, groups, command, paths, project):
     if "memory" in settings:
         flags += ["--memory", str(settings["memory"])]
     mounts = paths.copy()
-    if settings.get("git_metadata") and not args.skip_cwd:
+    if settings.get("git_metadata") and not launch.skip_cwd:
         mounts += [common for path in paths if os.path.isdir(path)
                    if (common := git_common_dir(path)) and common not in mounts]
     auto_create_dirs = []
@@ -780,30 +891,52 @@ def build_command(args, groups, command, paths, project):
     return cmd, settings["secrets"]
 
 
-def main(argv):
-    args, groups, command = parse_args(argv)
+def with_group_flags(saved, flags, groups):
+    return [name for name in saved if name in groups and name not in flags] + list(flags)
+
+
+def choose_launch(args, groups, state_path, config):
+    terminal = sys.stdin.isatty() and sys.stdout.isatty()
+    flags = dict.fromkeys(args.groups)
+    if args.interactive:
+        if not terminal:
+            fail("-i requires a terminal")
+        projects = load_recent_projects(state_path, config)
+        if not projects:
+            fail("no projects saved for this configuration; launch one without -i first")
+        project = pick_project(projects)
+        if project is None:
+            sys.exit(130)
+        return replace(project, groups=with_group_flags(project.groups, flags, groups)), False
+
     paths, project, cwd_only, mount_hash = project_mounts(args.paths, args.skip_cwd)
-    state_path = state_database_path()
-    config = Path(os.path.realpath(args.config)).as_uri()
     saved_name, saved_groups = load_project_config(state_path, config, mount_hash)
     project = saved_name or project
     prefilled_project = project
-    if not args.no_picker and sys.stdin.isatty() and sys.stdout.isatty():
+    selected = list(flags)
+    if not args.no_picker and terminal:
         always_applied = set(resolve(groups, []))
         names = [name for name in groups if name not in always_applied]
-        flags = dict.fromkeys(args.groups)
 
         def preselect(name):
             saved = saved_groups
             if saved is None:
                 saved = load_project_defaults(state_path, config, name, inherit=cwd_only)
-            return [group for group in saved if group not in flags] + list(flags)
+            return with_group_flags(saved, flags, groups)
 
         selection = pick_startup(project, names, preselect, groups, load_group_usage(state_path, config))
         if selection is None:
             sys.exit(130)
-        project, args.groups = selection
-    cmd, secrets = build_command(args, groups, command, paths, project)
+        project, selected = selection
+    return ProjectLaunch(mount_hash, project, paths, args.skip_cwd, selected), project != prefilled_project
+
+
+def main(argv):
+    args, groups, command = parse_args(argv)
+    state_path = state_database_path()
+    config = Path(os.path.realpath(args.config)).as_uri()
+    launch, renamed = choose_launch(args, groups, state_path, config)
+    cmd, secrets = build_command(args, groups, command, launch)
 
     if args.debug:
         # A runnable script: secrets are read like sb does (first output line), not here.
@@ -816,19 +949,17 @@ def main(argv):
         return
 
     env = os.environ | {name: secret_value(name, spec) for name, spec in secrets.items()}
-    selected = list(dict.fromkeys(args.groups))
     found_msb = shutil.which("msb", path=env.get("PATH", os.defpath))
     lock = lock_launch_state(state_path) if found_msb else nullcontext(False)
     with lock as locked:
         previous = None
         if locked:
-            previous = record_launch(state_path, config, mount_hash, project, selected,
-                                     renamed=project != prefilled_project)
+            previous = record_launch(state_path, config, launch, renamed=renamed)
         try:
             os.execvpe("msb", cmd, env)
         except BaseException as error:
             if previous is not None:
-                undo_launch(state_path, config, mount_hash, selected, previous)
+                undo_launch(state_path, config, launch, previous)
             if isinstance(error, FileNotFoundError):
                 fail("msb not found on PATH")
             raise

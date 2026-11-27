@@ -125,5 +125,29 @@ class PickerTests(unittest.TestCase):
         self.assertIsNone(self.pick("\x03", ["java"]))
 
 
+@unittest.skipIf(create_pipe_input is None, "Prompt Toolkit is not installed")
+class ProjectPickerTests(unittest.TestCase):
+    def test_search_navigation_and_launch(self):
+        projects = [
+            sb.ProjectLaunch("first", "Recent project", ["/work/delta"], False, []),
+            sb.ProjectLaunch("second", "Older project", ["/work/alpha"], False, []),
+            sb.ProjectLaunch("third", "Oldest project", ["/work/beta"], False, []),
+        ]
+        for keys, expected in (
+            ("\r", projects[0]),
+            ("jjk\r", projects[1]),
+            ("\x1b[B\x1b[B\x1b[A\r", projects[1]),
+            ("od pr\r", projects[1]),
+            ("bta\r", projects[2]),
+            ("zzzz\r\x7f\r", projects[0]),
+            ("\x03", None),
+        ):
+            with (self.subTest(keys=keys), create_pipe_input() as terminal,
+                  create_app_session(input=terminal, output=DummyOutput())):
+                terminal.send_text(keys)
+                terminal.close()
+                self.assertEqual(sb.pick_project(projects), expected)
+
+
 if __name__ == "__main__":
     unittest.main()

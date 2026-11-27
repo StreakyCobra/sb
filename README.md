@@ -28,6 +28,7 @@ cp example.toml ~/.config/sb/config.toml
 
 ```bash
 sb                                       # choose groups and launch the sandbox
+sb -i                                    # pick and launch a recent project
 sb --claude -- claude --continue         # Claude Code, resuming the last session
 sb --opencode --github ~/Workspace/proj  # opencode with a GitHub token
 sb --debug --claude --java .             # print the msb command instead of running it
@@ -37,6 +38,14 @@ sb -s                                    # work from sandbox home without mounti
 sb --no-network-filter                   # ignore configured allowlists for this run
 sb --help                                # list the groups
 ```
+
+Run `sb -i` to pick a saved project for the current configuration file. The
+launcher lists the most recently used projects first. Type to filter by name
+or path. Use the arrow keys or `j` and `k` to move. Press Backspace to clear the
+search, Enter to launch with the saved paths and groups, or Esc to cancel.
+
+You can add group flags or pass a command for this run. Projects saved before
+the launcher was added appear after you launch them once without `-i`.
 
 In a terminal, `sb` opens the startup picker with the project name selected.
 Type to replace the name, or press Enter to keep it and move to the groups.

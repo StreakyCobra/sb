@@ -2,6 +2,7 @@ import contextlib
 import fcntl
 import io
 import os
+import shlex
 import sqlite3
 import tempfile
 import unittest
@@ -162,6 +163,89 @@ class GroupUsageTests(unittest.TestCase):
             return project, []
 
         self.open_picker(open_explicit_paths, str(root))
+
+    def test_project_launcher_replays_saved_paths_and_groups_in_recent_order(self):
+        first, second = (self.config.parent / name for name in ("first", "second"))
+        first.mkdir()
+        second.mkdir()
+        argv = ["--config", str(self.config)]
+        self.open_picker(lambda *_: ("paired", ["python"]), "-s", str(second), str(first))
+        self.open_picker(lambda *_: ("single", ["java"]), str(first))
+        other = self.config.with_name("other.toml")
+        other.write_text(self.config.read_text())
+        sb.main(["--config", str(other), "--no-picker", "-s"])
+        self.config.write_text('[default]\nimage = "test"\n[python]\nenv = { PYTHON = "on" }\n')
+
+        def choose(projects):
+            self.assertEqual([project.name for project in projects], ["single", "paired"])
+            return projects[1]
+
+        with (patch.object(Path, "cwd", return_value=Path.home()),
+              patch.object(sb.sys.stdin, "isatty", return_value=True),
+              patch.object(sb.sys.stdout, "isatty", return_value=True),
+              patch.object(sb, "pick_project", side_effect=choose),
+              patch.object(sb, "pick_startup") as startup):
+            sb.main([*argv, "-i", "--", "echo", "hello"])
+        startup.assert_not_called()
+        _, command, env = self.execute.call_args.args
+        self.assertEqual(env["SB_PROJECT"], "paired")
+        self.assertEqual(command[command.index("-w") + 1], str(second))
+        self.assertEqual([command[i + 1] for i, arg in enumerate(command) if arg == "-v"],
+                         [f"{second}:{second}", f"{first}:{first}"])
+        self.assertIn("PYTHON=on", command)
+        self.assertEqual(command[-3:], ["--", "echo", "hello"])
+        self.assertEqual([project.name for project in sb.load_recent_projects(self.state, self.config.as_uri())],
+                         ["paired", "single"])
+
+    def test_old_project_is_launchable_after_its_paths_are_saved(self):
+        paths = [str(self.config.parent)]
+        _, _, _, mount_hash = sb.project_mounts(paths, False)
+        self.state.parent.mkdir(parents=True)
+        with contextlib.closing(sqlite3.connect(self.state)) as db, db:
+            db.execute("""
+                CREATE TABLE project_config (
+                    config TEXT NOT NULL, mount_hash TEXT NOT NULL, project TEXT NOT NULL,
+                    custom_name INTEGER NOT NULL, groups TEXT NOT NULL, last_used INTEGER NOT NULL,
+                    PRIMARY KEY (config, mount_hash)
+                )
+            """)
+            db.execute("INSERT INTO project_config VALUES (?, ?, 'original', 1, '[\"java\"]', 1)",
+                       (self.config.as_uri(), mount_hash))
+        self.assertEqual(sb.load_recent_projects(self.state, self.config.as_uri()), [])
+
+        def pick(project, names, preselect, groups, usage):
+            self.assertEqual(project, "original")
+            self.assertEqual(preselect(project), ["java"])
+            return project, preselect(project)
+
+        self.open_picker(pick, *paths)
+        self.assertEqual(sb.load_recent_projects(self.state, self.config.as_uri()),
+                         [sb.ProjectLaunch(mount_hash, "original", paths, False, ["java"])])
+
+    def test_project_launcher_can_preview_a_project_without_updating_state(self):
+        self.open_picker(lambda *_: ("workspace", ["java"]), "-s")
+        self.config.write_text('[default]\nimage = "test"\n[python]\nenv = { PYTHON = "on" }\n')
+        output = io.StringIO()
+        with (contextlib.redirect_stdout(output),
+              patch.object(sb.sys.stdin, "isatty", return_value=True),
+              patch.object(output, "isatty", return_value=True),
+              patch.object(sb, "pick_project", side_effect=lambda projects: projects[0])):
+            sb.main(["--config", str(self.config), "-i", "--debug", "--python"])
+        self.assertEqual(self.execute.call_count, 1)
+        self.assertEqual(self.saved_groups(), ["java"])
+        self.assertIn("PYTHON=on", shlex.split(output.getvalue()))
+
+    def test_project_launcher_requires_a_terminal_and_saved_projects(self):
+        argv = ["--config", str(self.config), "-i"]
+        with (patch.object(sb.sys.stdin, "isatty", return_value=False),
+              self.assertRaisesRegex(SystemExit, "-i requires a terminal")):
+            sb.main(argv)
+        with (patch.object(sb.sys.stdin, "isatty", return_value=True),
+              patch.object(sb.sys.stdout, "isatty", return_value=True),
+              self.assertRaisesRegex(SystemExit, "no projects saved")):
+            sb.main(argv)
+        self.execute.assert_not_called()
+        self.assertFalse(self.state.exists())
 
     def test_debug_and_cancel_do_not_create_usage(self):
         argv = ["--config", str(self.config), "-s", "--java"]
